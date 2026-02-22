@@ -167,20 +167,25 @@ src/
 
 > **Rust 说明**：在 Rust 中，`src/app.rs` 与 `src/app/mod.rs` 对外导出的模块名完全相同（都是 `mod app`），调用方无需任何修改。目录形式是官方推荐的大型模块组织方式，两者在语义上等价，仅在文件布局上有区别。
 
-## 安装与使用
+## 项目结构
 
-### 安装
-1. 确保安装了Rust工具链（https://rustup.rs/）。
-2. 克隆项目：`git clone https://github.com/suifengwudong/text-tool.git`
-3. 进入目录：`cd text-tool`
-4. 构建：`cargo build --release`
-5. 运行：`cargo run`
-
-### 使用
-- 打开项目后，选择小说项目目录。
-- 使用左侧工具栏切换模块。
-- 在编辑区编写Markdown内容和JSON设计。
-- 图形化模块支持拖拽调整，同步到文本文件。
+```
+src/
+├── main.rs              # 应用入口
+├── app/
+│   ├── mod.rs           # 应用模块声明
+│   ├── models.rs        # 数据模型（Character, Panel等）
+│   ├── file_manager.rs  # 文件管理逻辑
+│   ├── ui_helpers.rs    # UI辅助函数
+│   └── panel/
+│       ├── mod.rs       # 面板模块声明
+│       ├── novel.rs     # 小说编辑面板
+│       ├── characters.rs # 人设&章节面板
+│       ├── outline.rs   # 大纲&伏笔面板
+│       └── llm.rs       # LLM辅助面板
+└── assets/
+    └── NotoSansCJKsc-Regular.otf  # 中文字体
+```
 
 ## 贡献
 欢迎提交Issue和Pull Request。请遵循项目的设计原则，保持轻量化。
