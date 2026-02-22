@@ -3,6 +3,136 @@ use std::path::{Path, PathBuf};
 use egui::{Context, RichText, Color32, Key};
 use serde::{Deserialize, Serialize};
 
+// ── Character / Chapter / Foreshadow data ─────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum RelationKind {
+    Friend,   // 友好
+    Enemy,    // 敌对
+    Family,   // 亲属
+    Other,    // 其他
+}
+
+impl RelationKind {
+    fn label(&self) -> &'static str {
+        match self {
+            RelationKind::Friend => "友好",
+            RelationKind::Enemy => "敌对",
+            RelationKind::Family => "亲属",
+            RelationKind::Other => "其他",
+        }
+    }
+    fn all() -> &'static [RelationKind] {
+        &[RelationKind::Friend, RelationKind::Enemy, RelationKind::Family, RelationKind::Other]
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Relationship {
+    pub target: String,
+    pub kind: RelationKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Character {
+    pub name: String,
+    pub traits: String,
+    pub background: String,
+    pub relationships: Vec<Relationship>,
+}
+
+impl Character {
+    fn new(name: &str) -> Self {
+        Character {
+            name: name.to_owned(),
+            traits: String::new(),
+            background: String::new(),
+            relationships: vec![],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum ChapterTag {
+    Normal,     // 普通
+    Climax,     // 高潮
+    Foreshadow, // 伏笔
+    Transition, // 过渡
+}
+
+impl ChapterTag {
+    fn label(&self) -> &'static str {
+        match self {
+            ChapterTag::Normal => "普通",
+            ChapterTag::Climax => "高潮",
+            ChapterTag::Foreshadow => "伏笔",
+            ChapterTag::Transition => "过渡",
+        }
+    }
+    fn all() -> &'static [ChapterTag] {
+        &[ChapterTag::Normal, ChapterTag::Climax, ChapterTag::Foreshadow, ChapterTag::Transition]
+    }
+    fn color(&self) -> Color32 {
+        match self {
+            ChapterTag::Normal => Color32::from_gray(160),
+            ChapterTag::Climax => Color32::from_rgb(220, 80, 80),
+            ChapterTag::Foreshadow => Color32::from_rgb(80, 160, 220),
+            ChapterTag::Transition => Color32::from_rgb(120, 190, 120),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Chapter {
+    pub title: String,
+    pub tag: ChapterTag,
+    pub summary: String,
+    pub word_count: u32,
+    pub done: bool,
+}
+
+impl Chapter {
+    fn new(title: &str) -> Self {
+        Chapter {
+            title: title.to_owned(),
+            tag: ChapterTag::Normal,
+            summary: String::new(),
+            word_count: 0,
+            done: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Foreshadow {
+    pub name: String,
+    pub description: String,
+    pub related_chapters: Vec<String>,
+    pub resolved: bool,
+}
+
+impl Foreshadow {
+    fn new(name: &str) -> Self {
+        Foreshadow {
+            name: name.to_owned(),
+            description: String::new(),
+            related_chapters: vec![],
+            resolved: false,
+        }
+    }
+}
+
+// ── LLM config ────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct LlmConfig {
+    pub model_path: String,
+    pub api_url: String,
+    pub temperature: f32,
+    pub max_tokens: u32,
+    pub use_local: bool,
+}
+
 
 // ── Panel IDs ────────────────────────────────────────────────────────────────
 
@@ -207,6 +337,27 @@ pub struct TextToolApp {
 
     // New file dialog
     new_file_dialog: Option<NewFileDialog>,
+
+    // ── Characters & Chapters (Panel::Characters) ────────────────────────────
+    characters: Vec<Character>,
+    selected_char_idx: Option<usize>,
+    new_char_name: String,
+    new_rel_target: String,
+    new_rel_kind: RelationKind,
+
+    chapters: Vec<Chapter>,
+    selected_chap_idx: Option<usize>,
+    new_chap_title: String,
+
+    // ── Outline & Foreshadowing (Panel::Outline) ─────────────────────────────
+    foreshadows: Vec<Foreshadow>,
+    selected_fs_idx: Option<usize>,
+    new_fs_name: String,
+
+    // ── LLM Assistance (Panel::LLM) ──────────────────────────────────────────
+    llm_config: LlmConfig,
+    llm_prompt: String,
+    llm_output: String,
 }
 
 #[derive(Debug)]
@@ -238,6 +389,26 @@ impl TextToolApp {
             last_focused_left: true,
             status: "欢迎使用 Text Tool".to_owned(),
             new_file_dialog: None,
+            characters: vec![],
+            selected_char_idx: None,
+            new_char_name: String::new(),
+            new_rel_target: String::new(),
+            new_rel_kind: RelationKind::Friend,
+            chapters: vec![],
+            selected_chap_idx: None,
+            new_chap_title: String::new(),
+            foreshadows: vec![],
+            selected_fs_idx: None,
+            new_fs_name: String::new(),
+            llm_config: LlmConfig {
+                model_path: String::new(),
+                api_url: "http://localhost:11434/api/generate".to_owned(),
+                temperature: 0.7,
+                max_tokens: 512,
+                use_local: true,
+            },
+            llm_prompt: String::new(),
+            llm_output: String::new(),
         }
     }
 
@@ -347,6 +518,615 @@ impl TextToolApp {
         } else {
             self.status = "请先在左侧打开一个 Markdown 文件".to_owned();
         }
+    }
+
+    /// Sync: save characters to Design/人物配置.json in the project.
+    fn sync_characters_to_json(&mut self) {
+        if let Some(root) = &self.project_root {
+            let path = root.join("Design").join("人物配置.json");
+            match serde_json::to_string_pretty(&self.characters) {
+                Ok(json) => {
+                    if let Err(e) = std::fs::write(&path, &json) {
+                        self.status = format!("保存人物配置失败: {e}");
+                    } else {
+                        self.status = "人物配置已同步到 Design/人物配置.json".to_owned();
+                    }
+                }
+                Err(e) => self.status = format!("序列化失败: {e}"),
+            }
+        } else {
+            self.status = "请先打开一个项目".to_owned();
+        }
+    }
+
+    /// Sync: save chapters to Design/章节结构.json in the project.
+    fn sync_chapters_to_json(&mut self) {
+        if let Some(root) = &self.project_root {
+            let path = root.join("Design").join("章节结构.json");
+            match serde_json::to_string_pretty(&self.chapters) {
+                Ok(json) => {
+                    if let Err(e) = std::fs::write(&path, &json) {
+                        self.status = format!("保存章节结构失败: {e}");
+                    } else {
+                        self.status = "章节结构已同步到 Design/章节结构.json".to_owned();
+                    }
+                }
+                Err(e) => self.status = format!("序列化失败: {e}"),
+            }
+        } else {
+            self.status = "请先打开一个项目".to_owned();
+        }
+    }
+
+    /// Sync: save foreshadows to Content/伏笔.md in the project.
+    fn sync_foreshadows_to_md(&mut self) {
+        if let Some(root) = &self.project_root {
+            let path = root.join("Content").join("伏笔.md");
+            let mut md = String::from("# 伏笔列表\n\n");
+            for fs in &self.foreshadows {
+                let status = if fs.resolved { "✅ 已解决" } else { "⏳ 未解决" };
+                md.push_str(&format!("## {} {}\n\n", fs.name, status));
+                if !fs.description.is_empty() {
+                    md.push_str(&format!("{}\n\n", fs.description));
+                }
+                if !fs.related_chapters.is_empty() {
+                    md.push_str(&format!("**关联章节**: {}\n\n", fs.related_chapters.join("、")));
+                }
+            }
+            if let Err(e) = std::fs::write(&path, &md) {
+                self.status = format!("保存伏笔失败: {e}");
+            } else {
+                self.status = "伏笔已同步到 Content/伏笔.md".to_owned();
+            }
+        } else {
+            self.status = "请先打开一个项目".to_owned();
+        }
+    }
+
+    // ── Panel: Characters & Chapters ─────────────────────────────────────────
+
+    fn draw_characters_panel(&mut self, ctx: &Context) {
+        // Left side: character list
+        egui::SidePanel::left("char_list")
+            .resizable(true)
+            .default_width(180.0)
+            .min_width(120.0)
+            .show(ctx, |ui| {
+                ui.add_space(4.0);
+                ui.heading("人物列表");
+                ui.separator();
+
+                egui::ScrollArea::vertical().id_salt("char_scroll").show(ui, |ui| {
+                    let mut to_remove: Option<usize> = None;
+                    for (i, ch) in self.characters.iter().enumerate() {
+                        let selected = self.selected_char_idx == Some(i);
+                        let resp = ui.selectable_label(selected, &ch.name);
+                        resp.context_menu(|ui| {
+                            if ui.button("删除").clicked() {
+                                to_remove = Some(i);
+                                ui.close_menu();
+                            }
+                        });
+                        if resp.clicked() {
+                            self.selected_char_idx = Some(i);
+                        }
+                    }
+                    if let Some(idx) = to_remove {
+                        self.characters.remove(idx);
+                        if self.selected_char_idx == Some(idx) {
+                            self.selected_char_idx = None;
+                        } else if let Some(sel) = self.selected_char_idx {
+                            if sel > idx { self.selected_char_idx = Some(sel - 1); }
+                        }
+                    }
+                });
+
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.text_edit_singleline(&mut self.new_char_name)
+                        .on_hover_text("输入人物名称");
+                    if ui.button("➕").on_hover_text("添加人物").clicked() {
+                        let name = self.new_char_name.trim().to_owned();
+                        if !name.is_empty() {
+                            let idx = self.characters.len();
+                            self.characters.push(Character::new(&name));
+                            self.selected_char_idx = Some(idx);
+                            self.new_char_name.clear();
+                        }
+                    }
+                });
+            });
+
+        // Central: character editor
+        egui::CentralPanel::default().show(ctx, |ui| {
+            // Top: chapter timeline
+            let ch_height = 200.0;
+            ui.group(|ui| {
+                ui.set_min_height(ch_height);
+                ui.heading("章节时间轴");
+                ui.separator();
+
+                ui.horizontal(|ui| {
+                    ui.text_edit_singleline(&mut self.new_chap_title)
+                        .on_hover_text("输入章节名称");
+                    if ui.button("➕ 添加章节").clicked() {
+                        let title = self.new_chap_title.trim().to_owned();
+                        if !title.is_empty() {
+                            let idx = self.chapters.len();
+                            self.chapters.push(Chapter::new(&title));
+                            self.selected_chap_idx = Some(idx);
+                            self.new_chap_title.clear();
+                        }
+                    }
+                    ui.separator();
+                    if ui.button("💾 同步章节到 JSON").clicked() {
+                        self.sync_chapters_to_json();
+                    }
+                });
+                ui.add_space(4.0);
+
+                // Timeline: horizontal scroll
+                egui::ScrollArea::horizontal().id_salt("timeline_scroll").show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let mut swap: Option<(usize, usize)> = None;
+                        let mut remove: Option<usize> = None;
+                        let count = self.chapters.len();
+                        for i in 0..count {
+                            let ch = &self.chapters[i];
+                            let selected = self.selected_chap_idx == Some(i);
+                            let frame_color = if selected {
+                                Color32::from_rgb(0, 122, 204)
+                            } else {
+                                Color32::from_gray(50)
+                            };
+                            egui::Frame::none()
+                                .fill(frame_color)
+                                .inner_margin(6.0)
+                                .rounding(4.0)
+                                .show(ui, |ui| {
+                                    ui.set_min_width(100.0);
+                                    ui.vertical(|ui| {
+                                        let label = ui.selectable_label(false,
+                                            RichText::new(&ch.title).strong()
+                                        );
+                                        if label.clicked() {
+                                            self.selected_chap_idx = Some(i);
+                                        }
+                                        ui.label(
+                                            RichText::new(ch.tag.label())
+                                                .color(ch.tag.color())
+                                                .small()
+                                        );
+                                        let done_text = if ch.done { "✅" } else { "⏳" };
+                                        ui.label(RichText::new(done_text).small());
+                                        label.context_menu(|ui| {
+                                            if i > 0 && ui.button("← 左移").clicked() {
+                                                swap = Some((i - 1, i));
+                                                ui.close_menu();
+                                            }
+                                            if i + 1 < count && ui.button("右移 →").clicked() {
+                                                swap = Some((i, i + 1));
+                                                ui.close_menu();
+                                            }
+                                            ui.separator();
+                                            if ui.button("删除").clicked() {
+                                                remove = Some(i);
+                                                ui.close_menu();
+                                            }
+                                        });
+                                    });
+                                });
+                            if i + 1 < count {
+                                ui.label("→");
+                            }
+                        }
+                        if let Some((a, b)) = swap {
+                            self.chapters.swap(a, b);
+                        }
+                        if let Some(idx) = remove {
+                            self.chapters.remove(idx);
+                            if self.selected_chap_idx == Some(idx) {
+                                self.selected_chap_idx = None;
+                            } else if let Some(sel) = self.selected_chap_idx {
+                                if sel > idx { self.selected_chap_idx = Some(sel - 1); }
+                            }
+                        }
+                    });
+                });
+
+                // Chapter detail editor
+                if let Some(idx) = self.selected_chap_idx {
+                    if let Some(ch) = self.chapters.get_mut(idx) {
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            ui.label("标题:");
+                            ui.text_edit_singleline(&mut ch.title);
+                            ui.label("标签:");
+                            for tag in ChapterTag::all() {
+                                let sel = &ch.tag == tag;
+                                if ui.selectable_label(sel, tag.label()).clicked() {
+                                    ch.tag = tag.clone();
+                                }
+                            }
+                            ui.checkbox(&mut ch.done, "已完成");
+                        });
+                        ui.label("简介:");
+                        ui.text_edit_multiline(&mut ch.summary);
+                    }
+                }
+            });
+
+            ui.add_space(8.0);
+
+            // Bottom: selected character editor
+            let mut do_char_sync = false;
+            if let Some(idx) = self.selected_char_idx {
+                // Extract fields to avoid simultaneous mutable borrows in closures
+                let char_name = self.characters.get(idx).map(|c| c.name.clone()).unwrap_or_default();
+                let mut do_add_rel = false;
+                let mut remove_rel_idx: Option<usize> = None;
+
+                if let Some(ch) = self.characters.get_mut(idx) {
+                    egui::Frame::none()
+                        .stroke(egui::Stroke::new(1.0, Color32::from_gray(60)))
+                        .inner_margin(8.0)
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.strong(format!("人物: {}", char_name));
+                                if ui.button("💾 同步人物到 JSON").clicked() {
+                                    do_char_sync = true;
+                                }
+                            });
+                            ui.separator();
+                            ui.horizontal(|ui| {
+                                ui.label("姓名:");
+                                ui.text_edit_singleline(&mut ch.name);
+                            });
+                            ui.label("核心特质:");
+                            ui.text_edit_multiline(&mut ch.traits);
+                            ui.label("背景故事:");
+                            ui.text_edit_multiline(&mut ch.background);
+
+                            ui.add_space(4.0);
+                            ui.label("人物关系:");
+                            for (ri, rel) in ch.relationships.iter().enumerate() {
+                                ui.horizontal(|ui| {
+                                    ui.label(format!("  {} ── {} ──▶ {}", char_name, rel.kind.label(), rel.target));
+                                    if ui.small_button("🗑").clicked() {
+                                        remove_rel_idx = Some(ri);
+                                    }
+                                });
+                            }
+                            if let Some(ri) = remove_rel_idx {
+                                ch.relationships.remove(ri);
+                            }
+                        });
+                }
+
+                // Add-relationship row (needs both ch and self.new_rel_*)
+                ui.horizontal(|ui| {
+                    ui.label("添加关系:");
+                    ui.text_edit_singleline(&mut self.new_rel_target)
+                        .on_hover_text("目标人物名称");
+                    for kind in RelationKind::all() {
+                        let sel = &self.new_rel_kind == kind;
+                        if ui.selectable_label(sel, kind.label()).clicked() {
+                            self.new_rel_kind = kind.clone();
+                        }
+                    }
+                    if ui.button("➕").clicked() {
+                        let target = self.new_rel_target.trim().to_owned();
+                        if !target.is_empty() {
+                            do_add_rel = true;
+                        }
+                    }
+                });
+
+                if do_add_rel {
+                    let target = self.new_rel_target.trim().to_owned();
+                    let kind = self.new_rel_kind.clone();
+                    if let Some(ch) = self.characters.get_mut(idx) {
+                        ch.relationships.push(Relationship { target, kind });
+                    }
+                    self.new_rel_target.clear();
+                }
+            } else if self.characters.is_empty() {
+                ui.centered_and_justified(|ui| {
+                    ui.label(RichText::new("← 在左侧添加人物以开始编辑").color(Color32::GRAY));
+                });
+            } else {
+                ui.centered_and_justified(|ui| {
+                    ui.label(RichText::new("← 点击左侧人物名称以编辑").color(Color32::GRAY));
+                });
+            }
+
+            if do_char_sync {
+                self.sync_characters_to_json();
+            }
+        });
+    }
+
+    // ── Panel: Outline & Foreshadowing ────────────────────────────────────────
+
+    fn draw_outline_panel(&mut self, ctx: &Context) {
+        // Left: outline tree derived from left_file (markdown) if open
+        egui::SidePanel::left("outline_tree")
+            .resizable(true)
+            .default_width(220.0)
+            .min_width(140.0)
+            .show(ctx, |ui| {
+                ui.add_space(4.0);
+                ui.heading("大纲树");
+                ui.separator();
+
+                if let Some(lf) = &self.left_file {
+                    if lf.is_markdown() {
+                        let outline = parse_outline(&lf.content);
+                        if outline.is_empty() {
+                            ui.label(RichText::new("Markdown 文件中暂无标题").color(Color32::GRAY));
+                        } else {
+                            egui::ScrollArea::vertical().id_salt("outline_tree_scroll").show(ui, |ui| {
+                                Self::draw_outline_entries(ui, &outline, 0);
+                            });
+                        }
+                    } else {
+                        ui.label(RichText::new("请在小说编辑面板打开 .md 文件").color(Color32::GRAY));
+                    }
+                } else {
+                    ui.label(RichText::new("请先在小说编辑面板\n打开 Markdown 文件").color(Color32::GRAY));
+                }
+            });
+
+        // Central: foreshadowing + progress
+        egui::CentralPanel::default().show(ctx, |ui| {
+            // Progress summary
+            ui.group(|ui| {
+                ui.heading("进度追踪");
+                ui.separator();
+                let total = self.chapters.len();
+                let done = self.chapters.iter().filter(|c| c.done).count();
+                if total == 0 {
+                    ui.label(RichText::new("暂无章节，请在人设&章节面板添加").color(Color32::GRAY));
+                } else {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("章节完成度: {done}/{total}"));
+                        let progress = done as f32 / total as f32;
+                        ui.add(egui::ProgressBar::new(progress).desired_width(200.0));
+                    });
+                    let pending: Vec<&str> = self.chapters.iter()
+                        .filter(|c| !c.done)
+                        .map(|c| c.title.as_str())
+                        .collect();
+                    if !pending.is_empty() {
+                        ui.label(format!("待写: {}", pending.join("、")));
+                    }
+                }
+            });
+
+            ui.add_space(8.0);
+
+            // Foreshadowing
+            ui.group(|ui| {
+                ui.horizontal(|ui| {
+                    ui.heading("伏笔管理");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("💾 同步到 MD").clicked() {
+                            self.sync_foreshadows_to_md();
+                        }
+                    });
+                });
+                ui.separator();
+
+                ui.horizontal(|ui| {
+                    ui.text_edit_singleline(&mut self.new_fs_name)
+                        .on_hover_text("输入伏笔名称");
+                    if ui.button("➕ 添加伏笔").clicked() {
+                        let name = self.new_fs_name.trim().to_owned();
+                        if !name.is_empty() {
+                            let idx = self.foreshadows.len();
+                            self.foreshadows.push(Foreshadow::new(&name));
+                            self.selected_fs_idx = Some(idx);
+                            self.new_fs_name.clear();
+                        }
+                    }
+                });
+
+                ui.add_space(4.0);
+
+                ui.columns(2, |cols| {
+                    // Foreshadow list
+                    cols[0].label("伏笔列表:");
+                    egui::ScrollArea::vertical().id_salt("fs_list_scroll").show(&mut cols[0], |ui| {
+                        let mut to_remove: Option<usize> = None;
+                        for (i, fs) in self.foreshadows.iter().enumerate() {
+                            let selected = self.selected_fs_idx == Some(i);
+                            let label = if fs.resolved {
+                                format!("✅ {}", fs.name)
+                            } else {
+                                format!("⏳ {}", fs.name)
+                            };
+                            let resp = ui.selectable_label(selected, &label);
+                            resp.context_menu(|ui| {
+                                if ui.button("删除").clicked() {
+                                    to_remove = Some(i);
+                                    ui.close_menu();
+                                }
+                            });
+                            if resp.clicked() {
+                                self.selected_fs_idx = Some(i);
+                            }
+                        }
+                        if let Some(idx) = to_remove {
+                            self.foreshadows.remove(idx);
+                            if self.selected_fs_idx == Some(idx) {
+                                self.selected_fs_idx = None;
+                            } else if let Some(sel) = self.selected_fs_idx {
+                                if sel > idx { self.selected_fs_idx = Some(sel - 1); }
+                            }
+                        }
+                    });
+
+                    // Foreshadow detail
+                    if let Some(idx) = self.selected_fs_idx {
+                        if let Some(fs) = self.foreshadows.get_mut(idx) {
+                            cols[1].label("伏笔名称:");
+                            cols[1].text_edit_singleline(&mut fs.name);
+                            cols[1].add_space(4.0);
+                            cols[1].label("描述:");
+                            cols[1].text_edit_multiline(&mut fs.description);
+                            cols[1].add_space(4.0);
+                            cols[1].checkbox(&mut fs.resolved, "已解决/揭示");
+                            cols[1].add_space(4.0);
+                            cols[1].label("关联章节 (逗号分隔):");
+                            let mut related = fs.related_chapters.join("、");
+                            if cols[1].text_edit_singleline(&mut related).changed() {
+                                fs.related_chapters = related
+                                    .split(['，', '、', ','])
+                                    .map(|s| s.trim().to_owned())
+                                    .filter(|s| !s.is_empty())
+                                    .collect();
+                            }
+                        }
+                    } else {
+                        cols[1].centered_and_justified(|ui| {
+                            ui.label(RichText::new("选择左侧伏笔以编辑").color(Color32::GRAY));
+                        });
+                    }
+                });
+            });
+        });
+    }
+
+    fn draw_outline_entries(ui: &mut egui::Ui, entries: &[OutlineEntry], depth: usize) {
+        let indent = depth as f32 * 16.0;
+        for entry in entries {
+            ui.horizontal(|ui| {
+                ui.add_space(indent);
+                let prefix = match entry.level {
+                    1 => "📖",
+                    2 => "📑",
+                    _ => "•",
+                };
+                ui.label(format!("{prefix} {}", entry.title));
+            });
+            if !entry.children.is_empty() {
+                Self::draw_outline_entries(ui, &entry.children, depth + 1);
+            }
+        }
+    }
+
+    // ── Panel: LLM Assistance ─────────────────────────────────────────────────
+
+    fn draw_llm_panel(&mut self, ctx: &Context) {
+        egui::SidePanel::left("llm_config")
+            .resizable(true)
+            .default_width(240.0)
+            .min_width(160.0)
+            .show(ctx, |ui| {
+                ui.add_space(4.0);
+                ui.heading("LLM 配置");
+                ui.separator();
+
+                ui.checkbox(&mut self.llm_config.use_local, "使用本地模型");
+                ui.add_space(4.0);
+
+                if self.llm_config.use_local {
+                    ui.label("模型路径:");
+                    ui.text_edit_singleline(&mut self.llm_config.model_path)
+                        .on_hover_text("本地模型文件路径 (.gguf 等)");
+                } else {
+                    ui.label("API 地址:");
+                    ui.text_edit_singleline(&mut self.llm_config.api_url)
+                        .on_hover_text("如 http://localhost:11434/api/generate");
+                }
+
+                ui.add_space(8.0);
+                ui.label(format!("温度 (Temperature): {:.2}", self.llm_config.temperature));
+                ui.add(egui::Slider::new(&mut self.llm_config.temperature, 0.0..=2.0)
+                    .step_by(0.05));
+
+                ui.add_space(4.0);
+                ui.label(format!("最大 Token: {}", self.llm_config.max_tokens));
+                ui.add(egui::Slider::new(&mut self.llm_config.max_tokens, 64..=2048)
+                    .step_by(64.0));
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.label(RichText::new("支持模型:\nLlama 2 7B、Phi-2\n等本地轻量模型\n或兼容 OpenAI API\n的云端服务")
+                    .color(Color32::from_gray(140))
+                    .small());
+            });
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.heading("LLM 辅助写作");
+            ui.separator();
+
+            ui.label("提示词 / 上下文:");
+            egui::ScrollArea::vertical()
+                .id_salt("llm_prompt_scroll")
+                .max_height(200.0)
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.llm_prompt)
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(8)
+                            .hint_text("输入提示词，例如：\n续写以下场景：\n或 优化以下对话：")
+                    );
+                });
+
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui.button("▶ 调用 LLM 补全").clicked() {
+                    self.llm_output = self.llm_simulate();
+                    self.status = "LLM 补全完成（模拟）".to_owned();
+                }
+                if ui.button("插入到左侧编辑区").clicked() {
+                    if !self.llm_output.is_empty() {
+                        if let Some(lf) = &mut self.left_file {
+                            lf.content.push_str("\n\n");
+                            lf.content.push_str(&self.llm_output);
+                            lf.modified = true;
+                            self.status = "已将 LLM 输出插入左侧编辑区".to_owned();
+                        } else {
+                            self.status = "请先在小说编辑面板打开 Markdown 文件".to_owned();
+                        }
+                    }
+                }
+                if ui.button("🗑 清空").clicked() {
+                    self.llm_prompt.clear();
+                    self.llm_output.clear();
+                }
+            });
+
+            ui.add_space(8.0);
+            ui.label("输出结果:");
+            egui::ScrollArea::vertical()
+                .id_salt("llm_output_scroll")
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.llm_output)
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(12)
+                            .hint_text("LLM 输出将显示在这里")
+                    );
+                });
+        });
+    }
+
+    /// Placeholder LLM call – returns a simulated response.
+    /// Replace with actual HTTP/FFI call when integrating a real model.
+    fn llm_simulate(&self) -> String {
+        if self.llm_prompt.trim().is_empty() {
+            return "（提示词为空，请输入内容后再试）".to_owned();
+        }
+        format!(
+            "【模拟输出 – 请配置真实模型】\n\n根据您的提示「{}…」，这里将显示模型生成的文本。\n\n当前配置:\n- {}: {}\n- 温度: {:.2}\n- 最大Token: {}",
+            self.llm_prompt.chars().take(30).collect::<String>(),
+            if self.llm_config.use_local { "本地模型" } else { "API" },
+            if self.llm_config.use_local { &self.llm_config.model_path } else { &self.llm_config.api_url },
+            self.llm_config.temperature,
+            self.llm_config.max_tokens,
+        )
     }
 
     // ── UI helpers ────────────────────────────────────────────────────────────
@@ -795,12 +1575,27 @@ impl eframe::App for TextToolApp {
         // Keyboard shortcuts (checked before UI to avoid conflicts)
         self.handle_keyboard(ctx);
 
-        // UI layers
+        // UI layers always visible
         self.draw_menu_bar(ctx);
         self.draw_status_bar(ctx);
         self.draw_toolbar(ctx);
-        self.draw_file_tree(ctx);
-        self.draw_editors(ctx);
+
+        // Content area switches based on active panel
+        match self.active_panel {
+            Panel::Novel => {
+                self.draw_file_tree(ctx);
+                self.draw_editors(ctx);
+            }
+            Panel::Characters => {
+                self.draw_characters_panel(ctx);
+            }
+            Panel::Outline => {
+                self.draw_outline_panel(ctx);
+            }
+            Panel::LLM => {
+                self.draw_llm_panel(ctx);
+            }
+        }
 
         // Dialogs
         self.draw_new_file_dialog(ctx);
@@ -884,5 +1679,86 @@ mod tests {
         assert_eq!(f.title(), "test.md");
         f.modified = true;
         assert_eq!(f.title(), "● test.md");
+    }
+
+    // ── New data-model tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_character_new() {
+        let ch = Character::new("张三");
+        assert_eq!(ch.name, "张三");
+        assert!(ch.traits.is_empty());
+        assert!(ch.background.is_empty());
+        assert!(ch.relationships.is_empty());
+    }
+
+    #[test]
+    fn test_character_relationship() {
+        let mut ch = Character::new("张三");
+        ch.relationships.push(Relationship {
+            target: "李四".to_owned(),
+            kind: RelationKind::Friend,
+        });
+        assert_eq!(ch.relationships.len(), 1);
+        assert_eq!(ch.relationships[0].target, "李四");
+        assert_eq!(ch.relationships[0].kind, RelationKind::Friend);
+    }
+
+    #[test]
+    fn test_chapter_new() {
+        let chap = Chapter::new("第一章");
+        assert_eq!(chap.title, "第一章");
+        assert_eq!(chap.tag, ChapterTag::Normal);
+        assert!(!chap.done);
+    }
+
+    #[test]
+    fn test_chapter_tag_labels() {
+        assert_eq!(ChapterTag::Climax.label(), "高潮");
+        assert_eq!(ChapterTag::Foreshadow.label(), "伏笔");
+        assert_eq!(ChapterTag::Transition.label(), "过渡");
+        assert_eq!(ChapterTag::Normal.label(), "普通");
+    }
+
+    #[test]
+    fn test_foreshadow_new() {
+        let fs = Foreshadow::new("神秘礼物");
+        assert_eq!(fs.name, "神秘礼物");
+        assert!(!fs.resolved);
+        assert!(fs.related_chapters.is_empty());
+    }
+
+    #[test]
+    fn test_relation_kind_labels() {
+        assert_eq!(RelationKind::Friend.label(), "友好");
+        assert_eq!(RelationKind::Enemy.label(), "敌对");
+        assert_eq!(RelationKind::Family.label(), "亲属");
+        assert_eq!(RelationKind::Other.label(), "其他");
+    }
+
+    #[test]
+    fn test_characters_json_serialization() {
+        let mut ch = Character::new("主角");
+        ch.traits = "勇敢、善良".to_owned();
+        ch.relationships.push(Relationship {
+            target: "反派".to_owned(),
+            kind: RelationKind::Enemy,
+        });
+        let json = serde_json::to_string(&ch).unwrap();
+        let deserialized: Character = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.name, "主角");
+        assert_eq!(deserialized.relationships[0].kind, RelationKind::Enemy);
+    }
+
+    #[test]
+    fn test_chapters_json_serialization() {
+        let mut chap = Chapter::new("序章");
+        chap.tag = ChapterTag::Foreshadow;
+        chap.done = true;
+        let json = serde_json::to_string(&chap).unwrap();
+        let deserialized: Chapter = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.title, "序章");
+        assert_eq!(deserialized.tag, ChapterTag::Foreshadow);
+        assert!(deserialized.done);
     }
 }
