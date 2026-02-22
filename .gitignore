@@ -3,17 +3,11 @@ target/
 Cargo.lock
 
 # IDE
-.vscode/settings.json
-.vscode/launch.json
-
-# OS
-.DS_Store
-Thumbs.db
+.vscode/
 
 # Temporary files
 *.tmp
 *.log
-rustup-init.exe
 
 # Assets (if not committed)
 # assets/
