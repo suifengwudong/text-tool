@@ -1,10 +1,10 @@
 use egui::{Context, RichText, Color32};
-use super::{TextToolApp, OutlineEntry, parse_outline};
+use super::super::{TextToolApp, OutlineEntry, Foreshadow, parse_outline};
 
 impl TextToolApp {
     // ── Panel: Outline & Foreshadowing ────────────────────────────────────────
 
-    pub(super) fn draw_outline_panel(&mut self, ctx: &Context) {
+    pub(in crate::app) fn draw_outline_panel(&mut self, ctx: &Context) {
         // Left: outline tree derived from left_file (markdown) if open
         egui::SidePanel::left("outline_tree")
             .resizable(true)
@@ -80,7 +80,7 @@ impl TextToolApp {
                         let name = self.new_fs_name.trim().to_owned();
                         if !name.is_empty() {
                             let idx = self.foreshadows.len();
-                            self.foreshadows.push(super::Foreshadow::new(&name));
+                            self.foreshadows.push(Foreshadow::new(&name));
                             self.selected_fs_idx = Some(idx);
                             self.new_fs_name.clear();
                         }
@@ -153,7 +153,7 @@ impl TextToolApp {
         });
     }
 
-    pub(super) fn draw_outline_entries(ui: &mut egui::Ui, entries: &[OutlineEntry], depth: usize) {
+    pub(in crate::app) fn draw_outline_entries(ui: &mut egui::Ui, entries: &[OutlineEntry], depth: usize) {
         let indent = depth as f32 * 16.0;
         for entry in entries {
             ui.horizontal(|ui| {

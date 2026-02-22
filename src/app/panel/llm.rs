@@ -1,10 +1,10 @@
 use egui::{Context, RichText, Color32};
-use super::TextToolApp;
+use super::super::TextToolApp;
 
 impl TextToolApp {
     // ── Panel: LLM Assistance ─────────────────────────────────────────────────
 
-    pub(super) fn draw_llm_panel(&mut self, ctx: &Context) {
+    pub(in crate::app) fn draw_llm_panel(&mut self, ctx: &Context) {
         egui::SidePanel::left("llm_config")
             .resizable(true)
             .default_width(240.0)
@@ -102,7 +102,7 @@ impl TextToolApp {
 
     /// Placeholder LLM call – returns a simulated response.
     /// Replace with actual HTTP/FFI call when integrating a real model.
-    pub(super) fn llm_simulate(&self) -> String {
+    pub(in crate::app) fn llm_simulate(&self) -> String {
         if self.llm_prompt.trim().is_empty() {
             return "（提示词为空，请输入内容后再试）".to_owned();
         }

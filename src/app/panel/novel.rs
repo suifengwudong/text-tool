@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 use egui::{Context, RichText, Color32};
-use super::{TextToolApp, FileNode, rfd_pick_folder};
+use super::super::{TextToolApp, FileNode, rfd_pick_folder};
 
 impl TextToolApp {
     // ── Novel panel: file tree + dual editors ─────────────────────────────────
 
-    pub(super) fn draw_file_tree(&mut self, ctx: &Context) {
+    pub(in crate::app) fn draw_file_tree(&mut self, ctx: &Context) {
         let mut open_left: Option<PathBuf> = None;
         let mut open_right: Option<PathBuf> = None;
         let mut new_in: Option<PathBuf> = None;
@@ -58,7 +58,7 @@ impl TextToolApp {
         }
     }
 
-    pub(super) fn draw_tree_node(
+    pub(in crate::app) fn draw_tree_node(
         ui: &mut egui::Ui,
         node: &FileNode,
         depth: usize,
@@ -115,7 +115,7 @@ impl TextToolApp {
         }
     }
 
-    pub(super) fn draw_editors(&mut self, ctx: &Context) {
+    pub(in crate::app) fn draw_editors(&mut self, ctx: &Context) {
         // Sync flag
         let mut do_sync = false;
 

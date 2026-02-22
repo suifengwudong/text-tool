@@ -3,10 +3,7 @@ use std::path::{Path, PathBuf};
 
 mod models;
 mod file_manager;
-mod panel_characters;
-mod panel_outline;
-mod panel_llm;
-mod panel_novel;
+mod panel;
 mod ui_helpers;
 
 pub use models::*;

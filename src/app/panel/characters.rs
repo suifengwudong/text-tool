@@ -1,10 +1,10 @@
 use egui::{Context, RichText, Color32};
-use super::{TextToolApp, Character, Chapter, ChapterTag, Relationship, RelationKind};
+use super::super::{TextToolApp, Character, Chapter, ChapterTag, Relationship, RelationKind};
 
 impl TextToolApp {
     // ── Panel: Characters & Chapters ─────────────────────────────────────────
 
-    pub(super) fn draw_characters_panel(&mut self, ctx: &Context) {
+    pub(in crate::app) fn draw_characters_panel(&mut self, ctx: &Context) {
         // Left side: character list
         egui::SidePanel::left("char_list")
             .resizable(true)
