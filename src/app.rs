@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use egui::{Context, RichText, Color32, Key};
 use serde::{Deserialize, Serialize};
 
+
 // ── Panel IDs ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -215,7 +216,17 @@ struct NewFileDialog {
 }
 
 impl TextToolApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        // Load Chinese font
+        let mut fonts = egui::FontDefinitions::default();
+        fonts.font_data.insert(
+            "chinese".to_owned(),
+            egui::FontData::from_static(include_bytes!("../assets/NotoSansCJKsc-Regular.otf")),
+        );
+        fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap().insert(0, "chinese".to_owned());
+        fonts.families.get_mut(&egui::FontFamily::Monospace).unwrap().insert(0, "chinese".to_owned());
+        cc.egui_ctx.set_fonts(fonts);
+
         TextToolApp {
             active_panel: Panel::Novel,
             project_root: None,

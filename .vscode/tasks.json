@@ -1,0 +1,20 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Run Project",
+			"type": "shell",
+			"command": "cargo run",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build",
+			"options": {
+				"env": {
+					"RUSTUP_HOME": "E:\\Rust\\rustup",
+					"CARGO_HOME": "E:\\Rust\\cargo"
+				}
+			}
+		}
+	]
+}
