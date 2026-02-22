@@ -133,6 +133,22 @@
 - **场景化**：支持人设关系调整、章节顺序调整、伏笔管理，无编程相关功能。
 - **本地优先**：所有操作本地完成，无强制联网，可离线使用。
 
+## 代码结构
+
+```
+src/
+├── main.rs                  # 程序入口
+└── app/
+    ├── mod.rs               # TextToolApp 结构体、核心逻辑（项目/文件/同步操作）及单元测试
+    ├── models.rs            # 数据模型（RelationKind、Character、Chapter、Foreshadow、LlmConfig、Panel 等）
+    ├── file_manager.rs      # 文件系统结构（FileNode、OutlineEntry、OpenFile）及 rfd 文件对话框封装
+    ├── panel_novel.rs       # 小说编辑面板 UI（文件树、双分栏编辑区）
+    ├── panel_characters.rs  # 人设&章节面板 UI（人物列表、章节时间轴）
+    ├── panel_outline.rs     # 大纲&伏笔面板 UI（大纲树、伏笔管理、进度追踪）
+    ├── panel_llm.rs         # LLM辅助面板 UI（模型配置、提示词输入、输出展示）
+    └── ui_helpers.rs        # 公共 UI 组件（菜单栏、工具栏、状态栏、新建文件对话框、键盘快捷键）
+```
+
 ## 安装与使用
 
 ### 安装
