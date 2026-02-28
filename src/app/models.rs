@@ -131,6 +131,25 @@ pub struct LlmConfig {
     pub use_local: bool,
 }
 
+// ── Markdown rendering settings ───────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct MarkdownSettings {
+    /// Base font size used when rendering the preview.
+    pub preview_font_size: f32,
+    /// When a Markdown file is opened, default to preview mode.
+    pub default_to_preview: bool,
+}
+
+impl Default for MarkdownSettings {
+    fn default() -> Self {
+        MarkdownSettings {
+            preview_font_size: 14.0,
+            default_to_preview: false,
+        }
+    }
+}
+
 // ── Panel IDs ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -56,6 +56,11 @@ pub struct TextToolApp {
     pub(super) llm_config: LlmConfig,
     pub(super) llm_prompt: String,
     pub(super) llm_output: String,
+
+    // ── Markdown preview ─────────────────────────────────────────────────────
+    pub(super) left_preview_mode: bool,
+    pub(super) md_settings: MarkdownSettings,
+    pub(super) show_settings_window: bool,
 }
 
 #[derive(Debug)]
@@ -107,6 +112,9 @@ impl TextToolApp {
             },
             llm_prompt: String::new(),
             llm_output: String::new(),
+            left_preview_mode: false,
+            md_settings: MarkdownSettings::default(),
+            show_settings_window: false,
         }
     }
 
@@ -141,12 +149,14 @@ impl TextToolApp {
             Ok(content) => {
                 let f = OpenFile::new(path.to_owned(), content);
                 if left {
-                self.left_file = Some(f);
-                self.left_undo_stack.clear();
-            } else {
-                self.right_file = Some(f);
-                self.right_undo_stack.clear();
-            }
+                    // Apply the default preview setting for Markdown files
+                    self.left_preview_mode = f.is_markdown() && self.md_settings.default_to_preview;
+                    self.left_file = Some(f);
+                    self.left_undo_stack.clear();
+                } else {
+                    self.right_file = Some(f);
+                    self.right_undo_stack.clear();
+                }
                 self.status = format!("已打开: {}", path.display());
             }
             Err(e) => self.status = format!("打开失败: {e}"),
@@ -313,6 +323,7 @@ impl eframe::App for TextToolApp {
 
         // Dialogs
         self.draw_new_file_dialog(ctx);
+        self.draw_settings_window(ctx);
     }
 }
 
@@ -430,6 +441,23 @@ mod tests {
         let deserialized: Character = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.name, "主角");
         assert_eq!(deserialized.relationships[0].kind, RelationKind::Enemy);
+    }
+
+    #[test]
+    fn test_markdown_settings_default() {
+        let s = MarkdownSettings::default();
+        assert_eq!(s.preview_font_size, 14.0);
+        assert!(!s.default_to_preview);
+    }
+
+    #[test]
+    fn test_markdown_settings_custom() {
+        let s = MarkdownSettings {
+            preview_font_size: 18.0,
+            default_to_preview: true,
+        };
+        assert_eq!(s.preview_font_size, 18.0);
+        assert!(s.default_to_preview);
     }
 
     #[test]

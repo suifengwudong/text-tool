@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use egui::{Context, RichText, Color32};
 use super::super::{TextToolApp, FileNode, rfd_pick_folder};
+use super::markdown::render_markdown;
 
 impl TextToolApp {
     // ── Novel panel: file tree + dual editors ─────────────────────────────────
@@ -145,12 +146,39 @@ impl TextToolApp {
                             if ui.small_button("💾").on_hover_text("保存 (Ctrl+S)").clicked() {
                                 self.save_left();
                             }
+                            // Preview toggle – only meaningful for Markdown files
+                            let is_md = self.left_file.as_ref().map(|f| f.is_markdown()).unwrap_or(false);
+                            if is_md {
+                                let toggle_label = if self.left_preview_mode { "✏ 编辑" } else { "👁 预览" };
+                                let hover = if self.left_preview_mode { "切换到编辑模式" } else { "切换到预览模式" };
+                                if ui.small_button(toggle_label).on_hover_text(hover).clicked() {
+                                    self.left_preview_mode = !self.left_preview_mode;
+                                }
+                            }
                         });
                     });
                     ui.separator();
 
                     let height = available.y - 60.0;
-                    if let Some(f) = &mut self.left_file {
+                    let is_preview = self.left_preview_mode
+                        && self.left_file.as_ref().map(|f| f.is_markdown()).unwrap_or(false);
+
+                    if is_preview {
+                        // ── Markdown preview ──────────────────────────────────
+                        if let Some(f) = &self.left_file {
+                            // Use references to avoid cloning – both are immutable
+                            // borrows of different fields, which Rust allows.
+                            let content: &str = &f.content;
+                            let settings = &self.md_settings;
+                            egui::ScrollArea::vertical()
+                                .id_salt("left_preview")
+                                .show(ui, |ui| {
+                                    ui.set_min_height(height);
+                                    render_markdown(ui, content, settings);
+                                });
+                        }
+                    } else if let Some(f) = &mut self.left_file {
+                        // ── Plain text editor ─────────────────────────────────
                         let prev = f.content.clone();
                         egui::ScrollArea::both()
                             .id_salt("left_editor")
