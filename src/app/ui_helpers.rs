@@ -44,7 +44,7 @@ impl TextToolApp {
                 });
 
                 ui.menu_button("视图", |ui| {
-                    for panel in [Panel::Novel, Panel::Characters, Panel::Outline, Panel::LLM] {
+                    for panel in [Panel::Novel, Panel::Objects, Panel::Structure, Panel::LLM] {
                         let label = format!("{} {}", panel.icon(), panel.label());
                         let selected = self.active_panel == panel;
                         if ui.selectable_label(selected, label).clicked() {
@@ -57,6 +57,19 @@ impl TextToolApp {
                 ui.menu_button("工具", |ui| {
                     if ui.button("同步大纲 (MD → JSON)").clicked() {
                         self.sync_outline_to_right();
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("同步世界对象到 JSON").clicked() {
+                        self.sync_world_objects_to_json();
+                        ui.close_menu();
+                    }
+                    if ui.button("同步章节结构到 JSON").clicked() {
+                        self.sync_struct_to_json();
+                        ui.close_menu();
+                    }
+                    if ui.button("同步伏笔到 MD").clicked() {
+                        self.sync_foreshadows_to_md();
                         ui.close_menu();
                     }
                 });
@@ -78,7 +91,7 @@ impl TextToolApp {
             .show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
                     ui.add_space(8.0);
-                    for panel in [Panel::Novel, Panel::Characters, Panel::Outline, Panel::LLM] {
+                    for panel in [Panel::Novel, Panel::Objects, Panel::Structure, Panel::LLM] {
                         let selected = self.active_panel == panel;
                         let btn = egui::Button::new(
                             RichText::new(panel.icon()).size(22.0)

@@ -36,18 +36,34 @@ pub struct TextToolApp {
     // New file dialog
     pub(super) new_file_dialog: Option<NewFileDialog>,
 
-    // ── Characters & Chapters (Panel::Characters) ────────────────────────────
-    pub(super) characters: Vec<Character>,
-    pub(super) selected_char_idx: Option<usize>,
-    pub(super) new_char_name: String,
-    pub(super) new_rel_target: String,
-    pub(super) new_rel_kind: RelationKind,
+    // ── World Objects (Panel::Objects) ────────────────────────────────────────
+    pub(super) world_objects: Vec<WorldObject>,
+    pub(super) selected_obj_idx: Option<usize>,
+    pub(super) new_obj_name: String,
+    pub(super) new_obj_kind: ObjectKind,
+    /// Input fields for adding a new ObjectLink on the selected object.
+    pub(super) new_link_name: String,
+    pub(super) new_link_rel_kind: RelationKind,
+    /// Whether the new link target is a StructNode title (true) or a WorldObject name (false).
+    pub(super) new_link_is_node: bool,
+    pub(super) new_link_note: String,
+    /// Kind filter shown in the object list side-panel (None = show all).
+    pub(super) obj_kind_filter: Option<ObjectKind>,
 
-    pub(super) chapters: Vec<Chapter>,
-    pub(super) selected_chap_idx: Option<usize>,
-    pub(super) new_chap_title: String,
+    // ── Structure (Panel::Structure) ──────────────────────────────────────────
+    pub(super) struct_roots: Vec<StructNode>,
+    /// Path of indices from struct_roots into the currently selected node.
+    pub(super) selected_node_path: Vec<usize>,
+    pub(super) new_node_title: String,
+    pub(super) new_node_kind: StructKind,
+    /// Input fields for adding a NodeLink on the selected node.
+    pub(super) new_node_link_title: String,
+    pub(super) new_node_link_kind: RelationKind,
+    pub(super) new_node_link_note: String,
+    /// Name input for linking a WorldObject to the selected StructNode.
+    pub(super) new_node_obj_link: String,
 
-    // ── Outline & Foreshadowing (Panel::Outline) ─────────────────────────────
+    // ── Outline & Foreshadowing (Panel::Structure – foreshadow sub-section) ───
     pub(super) foreshadows: Vec<Foreshadow>,
     pub(super) selected_fs_idx: Option<usize>,
     pub(super) new_fs_name: String,
@@ -92,14 +108,23 @@ impl TextToolApp {
             last_focused_left: true,
             status: "欢迎使用 Text Tool".to_owned(),
             new_file_dialog: None,
-            characters: vec![],
-            selected_char_idx: None,
-            new_char_name: String::new(),
-            new_rel_target: String::new(),
-            new_rel_kind: RelationKind::Friend,
-            chapters: vec![],
-            selected_chap_idx: None,
-            new_chap_title: String::new(),
+            world_objects: vec![],
+            selected_obj_idx: None,
+            new_obj_name: String::new(),
+            new_obj_kind: ObjectKind::Character,
+            new_link_name: String::new(),
+            new_link_rel_kind: RelationKind::Friend,
+            new_link_is_node: false,
+            new_link_note: String::new(),
+            obj_kind_filter: None,
+            struct_roots: vec![],
+            selected_node_path: vec![],
+            new_node_title: String::new(),
+            new_node_kind: StructKind::Chapter,
+            new_node_link_title: String::new(),
+            new_node_link_kind: RelationKind::Foreshadows,
+            new_node_link_note: String::new(),
+            new_node_obj_link: String::new(),
             foreshadows: vec![],
             selected_fs_idx: None,
             new_fs_name: String::new(),
@@ -228,16 +253,16 @@ impl TextToolApp {
         }
     }
 
-    /// Sync: save characters to Design/人物配置.json in the project.
-    pub(super) fn sync_characters_to_json(&mut self) {
+    /// Sync: save world objects to Design/世界对象.json.
+    pub(super) fn sync_world_objects_to_json(&mut self) {
         if let Some(root) = &self.project_root {
-            let path = root.join("Design").join("人物配置.json");
-            match serde_json::to_string_pretty(&self.characters) {
+            let path = root.join("Design").join("世界对象.json");
+            match serde_json::to_string_pretty(&self.world_objects) {
                 Ok(json) => {
                     if let Err(e) = std::fs::write(&path, &json) {
-                        self.status = format!("保存人物配置失败: {e}");
+                        self.status = format!("保存世界对象失败: {e}");
                     } else {
-                        self.status = "人物配置已同步到 Design/人物配置.json".to_owned();
+                        self.status = "世界对象已同步到 Design/世界对象.json".to_owned();
                     }
                 }
                 Err(e) => self.status = format!("序列化失败: {e}"),
@@ -247,11 +272,11 @@ impl TextToolApp {
         }
     }
 
-    /// Sync: save chapters to Design/章节结构.json in the project.
-    pub(super) fn sync_chapters_to_json(&mut self) {
+    /// Sync: save struct tree to Design/章节结构.json.
+    pub(super) fn sync_struct_to_json(&mut self) {
         if let Some(root) = &self.project_root {
             let path = root.join("Design").join("章节结构.json");
-            match serde_json::to_string_pretty(&self.chapters) {
+            match serde_json::to_string_pretty(&self.struct_roots) {
                 Ok(json) => {
                     if let Err(e) = std::fs::write(&path, &json) {
                         self.status = format!("保存章节结构失败: {e}");
@@ -290,6 +315,18 @@ impl TextToolApp {
             self.status = "请先打开一个项目".to_owned();
         }
     }
+
+    // ── Tree helpers ──────────────────────────────────────────────────────────
+
+    /// Collect the names of all world objects for auto-complete / validation.
+    pub(super) fn all_object_names(&self) -> Vec<String> {
+        self.world_objects.iter().map(|o| o.name.clone()).collect()
+    }
+
+    /// Collect all structure node titles (depth-first).
+    pub(super) fn all_struct_node_titles(&self) -> Vec<String> {
+        all_node_titles(&self.struct_roots)
+    }
 }
 
 // ── eframe::App impl ──────────────────────────────────────────────────────────
@@ -310,11 +347,11 @@ impl eframe::App for TextToolApp {
                 self.draw_file_tree(ctx);
                 self.draw_editors(ctx);
             }
-            Panel::Characters => {
-                self.draw_characters_panel(ctx);
+            Panel::Objects => {
+                self.draw_objects_panel(ctx);
             }
-            Panel::Outline => {
-                self.draw_outline_panel(ctx);
+            Panel::Structure => {
+                self.draw_structure_panel(ctx);
             }
             Panel::LLM => {
                 self.draw_llm_panel(ctx);
@@ -374,36 +411,171 @@ mod tests {
         assert_eq!(f.title(), "● test.md");
     }
 
-    // ── New data-model tests ──────────────────────────────────────────────────
+    // ── ObjectKind tests ──────────────────────────────────────────────────────
 
     #[test]
-    fn test_character_new() {
-        let ch = Character::new("张三");
-        assert_eq!(ch.name, "张三");
-        assert!(ch.traits.is_empty());
-        assert!(ch.background.is_empty());
-        assert!(ch.relationships.is_empty());
+    fn test_object_kind_labels() {
+        assert_eq!(ObjectKind::Character.label(), "人物");
+        assert_eq!(ObjectKind::Scene.label(), "场景");
+        assert_eq!(ObjectKind::Location.label(), "地点");
+        assert_eq!(ObjectKind::Item.label(), "道具");
+        assert_eq!(ObjectKind::Faction.label(), "势力");
+        assert_eq!(ObjectKind::Other.label(), "其他");
     }
 
     #[test]
-    fn test_character_relationship() {
-        let mut ch = Character::new("张三");
-        ch.relationships.push(Relationship {
-            target: "李四".to_owned(),
+    fn test_world_object_new() {
+        let obj = WorldObject::new("张三", ObjectKind::Character);
+        assert_eq!(obj.name, "张三");
+        assert_eq!(obj.kind, ObjectKind::Character);
+        assert!(obj.description.is_empty());
+        assert!(obj.links.is_empty());
+    }
+
+    #[test]
+    fn test_world_object_link() {
+        let mut obj = WorldObject::new("张三", ObjectKind::Character);
+        obj.links.push(ObjectLink {
+            target: LinkTarget::Object("李四".to_owned()),
             kind: RelationKind::Friend,
+            note: String::new(),
         });
-        assert_eq!(ch.relationships.len(), 1);
-        assert_eq!(ch.relationships[0].target, "李四");
-        assert_eq!(ch.relationships[0].kind, RelationKind::Friend);
+        assert_eq!(obj.links.len(), 1);
+        assert_eq!(obj.links[0].target.display_name(), "李四");
+        assert_eq!(obj.links[0].target.type_label(), "对象");
     }
 
     #[test]
-    fn test_chapter_new() {
-        let chap = Chapter::new("第一章");
-        assert_eq!(chap.title, "第一章");
-        assert_eq!(chap.tag, ChapterTag::Normal);
-        assert!(!chap.done);
+    fn test_world_object_link_to_node() {
+        let mut obj = WorldObject::new("古剑", ObjectKind::Item);
+        obj.links.push(ObjectLink {
+            target: LinkTarget::Node("第一章".to_owned()),
+            kind: RelationKind::AppearsIn,
+            note: "在山洞中被发现".to_owned(),
+        });
+        assert_eq!(obj.links[0].target.type_label(), "章节");
+        assert_eq!(obj.links[0].note, "在山洞中被发现");
     }
+
+    #[test]
+    fn test_world_object_json_serialization() {
+        let mut obj = WorldObject::new("主角", ObjectKind::Character);
+        obj.description = "勇敢、善良".to_owned();
+        obj.links.push(ObjectLink {
+            target: LinkTarget::Object("反派".to_owned()),
+            kind: RelationKind::Enemy,
+            note: String::new(),
+        });
+        let json = serde_json::to_string(&obj).unwrap();
+        let d: WorldObject = serde_json::from_str(&json).unwrap();
+        assert_eq!(d.name, "主角");
+        assert_eq!(d.kind, ObjectKind::Character);
+        assert_eq!(d.links[0].kind, RelationKind::Enemy);
+    }
+
+    // ── StructKind tests ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_struct_kind_labels() {
+        assert_eq!(StructKind::Outline.label(), "总纲");
+        assert_eq!(StructKind::Volume.label(), "卷");
+        assert_eq!(StructKind::Chapter.label(), "章");
+        assert_eq!(StructKind::Section.label(), "节");
+    }
+
+    #[test]
+    fn test_struct_kind_default_child() {
+        assert_eq!(StructKind::Outline.default_child_kind(), StructKind::Volume);
+        assert_eq!(StructKind::Volume.default_child_kind(), StructKind::Chapter);
+        assert_eq!(StructKind::Chapter.default_child_kind(), StructKind::Section);
+    }
+
+    // ── StructNode tests ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_struct_node_new() {
+        let n = StructNode::new("第一章", StructKind::Chapter);
+        assert_eq!(n.title, "第一章");
+        assert_eq!(n.kind, StructKind::Chapter);
+        assert!(n.children.is_empty());
+        assert!(n.linked_objects.is_empty());
+        assert!(!n.done);
+    }
+
+    #[test]
+    fn test_struct_node_leaf_count() {
+        let mut vol = StructNode::new("第一卷", StructKind::Volume);
+        vol.children.push(StructNode::new("第一章", StructKind::Chapter));
+        vol.children.push(StructNode::new("第二章", StructKind::Chapter));
+        assert_eq!(vol.leaf_count(), 2);
+    }
+
+    #[test]
+    fn test_struct_node_done_count() {
+        let mut vol = StructNode::new("第一卷", StructKind::Volume);
+        let mut ch1 = StructNode::new("第一章", StructKind::Chapter);
+        ch1.done = true;
+        vol.children.push(ch1);
+        vol.children.push(StructNode::new("第二章", StructKind::Chapter));
+        assert_eq!(vol.done_count(), 1);
+        assert_eq!(vol.leaf_count(), 2);
+    }
+
+    #[test]
+    fn test_struct_node_json_serialization() {
+        let mut node = StructNode::new("序章", StructKind::Chapter);
+        node.tag = ChapterTag::Foreshadow;
+        node.done = true;
+        node.linked_objects.push("主角".to_owned());
+        let json = serde_json::to_string(&node).unwrap();
+        let d: StructNode = serde_json::from_str(&json).unwrap();
+        assert_eq!(d.title, "序章");
+        assert_eq!(d.tag, ChapterTag::Foreshadow);
+        assert!(d.done);
+        assert_eq!(d.linked_objects[0], "主角");
+    }
+
+    // ── node_at / node_at_mut tests ───────────────────────────────────────────
+
+    #[test]
+    fn test_node_at() {
+        let mut roots = vec![StructNode::new("第一卷", StructKind::Volume)];
+        roots[0].children.push(StructNode::new("第一章", StructKind::Chapter));
+        assert_eq!(node_at(&roots, &[0]).unwrap().title, "第一卷");
+        assert_eq!(node_at(&roots, &[0, 0]).unwrap().title, "第一章");
+        assert!(node_at(&roots, &[1]).is_none());
+    }
+
+    #[test]
+    fn test_node_at_mut() {
+        let mut roots = vec![StructNode::new("第一卷", StructKind::Volume)];
+        roots[0].children.push(StructNode::new("第一章", StructKind::Chapter));
+        node_at_mut(&mut roots, &[0, 0]).unwrap().done = true;
+        assert!(roots[0].children[0].done);
+    }
+
+    #[test]
+    fn test_all_node_titles() {
+        let mut roots = vec![StructNode::new("第一卷", StructKind::Volume)];
+        roots[0].children.push(StructNode::new("第一章", StructKind::Chapter));
+        roots[0].children.push(StructNode::new("第二章", StructKind::Chapter));
+        let titles = all_node_titles(&roots);
+        assert_eq!(titles, vec!["第一卷", "第一章", "第二章"]);
+    }
+
+    // ── RelationKind tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_relation_kind_labels() {
+        assert_eq!(RelationKind::Friend.label(), "友好");
+        assert_eq!(RelationKind::Enemy.label(), "敌对");
+        assert_eq!(RelationKind::Family.label(), "亲属");
+        assert_eq!(RelationKind::AppearsIn.label(), "出场");
+        assert_eq!(RelationKind::Foreshadows.label(), "铺垫");
+        assert_eq!(RelationKind::Resolves.label(), "回收");
+    }
+
+    // ── ChapterTag tests ──────────────────────────────────────────────────────
 
     #[test]
     fn test_chapter_tag_labels() {
@@ -413,6 +585,8 @@ mod tests {
         assert_eq!(ChapterTag::Normal.label(), "普通");
     }
 
+    // ── Foreshadow tests ──────────────────────────────────────────────────────
+
     #[test]
     fn test_foreshadow_new() {
         let fs = Foreshadow::new("神秘礼物");
@@ -421,27 +595,7 @@ mod tests {
         assert!(fs.related_chapters.is_empty());
     }
 
-    #[test]
-    fn test_relation_kind_labels() {
-        assert_eq!(RelationKind::Friend.label(), "友好");
-        assert_eq!(RelationKind::Enemy.label(), "敌对");
-        assert_eq!(RelationKind::Family.label(), "亲属");
-        assert_eq!(RelationKind::Other.label(), "其他");
-    }
-
-    #[test]
-    fn test_characters_json_serialization() {
-        let mut ch = Character::new("主角");
-        ch.traits = "勇敢、善良".to_owned();
-        ch.relationships.push(Relationship {
-            target: "反派".to_owned(),
-            kind: RelationKind::Enemy,
-        });
-        let json = serde_json::to_string(&ch).unwrap();
-        let deserialized: Character = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.name, "主角");
-        assert_eq!(deserialized.relationships[0].kind, RelationKind::Enemy);
-    }
+    // ── MarkdownSettings tests ────────────────────────────────────────────────
 
     #[test]
     fn test_markdown_settings_default() {
@@ -458,17 +612,5 @@ mod tests {
         };
         assert_eq!(s.preview_font_size, 18.0);
         assert!(s.default_to_preview);
-    }
-
-    #[test]
-    fn test_chapters_json_serialization() {
-        let mut chap = Chapter::new("序章");
-        chap.tag = ChapterTag::Foreshadow;
-        chap.done = true;
-        let json = serde_json::to_string(&chap).unwrap();
-        let deserialized: Chapter = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.title, "序章");
-        assert_eq!(deserialized.tag, ChapterTag::Foreshadow);
-        assert!(deserialized.done);
     }
 }
