@@ -44,7 +44,7 @@ impl TextToolApp {
                 });
 
                 ui.menu_button("视图", |ui| {
-                    for panel in [Panel::Novel, Panel::Characters, Panel::Outline, Panel::LLM] {
+                    for panel in [Panel::Novel, Panel::Objects, Panel::Structure, Panel::LLM] {
                         let label = format!("{} {}", panel.icon(), panel.label());
                         let selected = self.active_panel == panel;
                         if ui.selectable_label(selected, label).clicked() {
@@ -59,6 +59,26 @@ impl TextToolApp {
                         self.sync_outline_to_right();
                         ui.close_menu();
                     }
+                    ui.separator();
+                    if ui.button("同步世界对象到 JSON").clicked() {
+                        self.sync_world_objects_to_json();
+                        ui.close_menu();
+                    }
+                    if ui.button("同步章节结构到 JSON").clicked() {
+                        self.sync_struct_to_json();
+                        ui.close_menu();
+                    }
+                    if ui.button("同步伏笔到 MD").clicked() {
+                        self.sync_foreshadows_to_md();
+                        ui.close_menu();
+                    }
+                });
+
+                ui.menu_button("设置", |ui| {
+                    if ui.button("⚙ Markdown 预览设置…").clicked() {
+                        self.show_settings_window = true;
+                        ui.close_menu();
+                    }
                 });
             });
         });
@@ -71,7 +91,7 @@ impl TextToolApp {
             .show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
                     ui.add_space(8.0);
-                    for panel in [Panel::Novel, Panel::Characters, Panel::Outline, Panel::LLM] {
+                    for panel in [Panel::Novel, Panel::Objects, Panel::Structure, Panel::LLM] {
                         let selected = self.active_panel == panel;
                         let btn = egui::Button::new(
                             RichText::new(panel.icon()).size(22.0)
@@ -203,5 +223,55 @@ impl TextToolApp {
                 }
             }
         }
+    }
+
+    /// Draw the floating Markdown preview settings window.
+    pub(super) fn draw_settings_window(&mut self, ctx: &Context) {
+        if !self.show_settings_window {
+            return;
+        }
+
+        let mut open = self.show_settings_window;
+        egui::Window::new("⚙ Markdown 预览设置")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .min_width(280.0)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.add_space(4.0);
+
+                ui.horizontal(|ui| {
+                    ui.label("预览字体大小:");
+                    ui.add(
+                        egui::Slider::new(&mut self.md_settings.preview_font_size, 10.0..=26.0)
+                            .step_by(1.0)
+                            .suffix(" px"),
+                    );
+                });
+
+                ui.add_space(4.0);
+                ui.checkbox(
+                    &mut self.md_settings.default_to_preview,
+                    "打开 Markdown 文件时默认切换到预览模式",
+                );
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+
+                ui.horizontal(|ui| {
+                    if ui.button("重置默认值").clicked() {
+                        self.md_settings = crate::app::MarkdownSettings::default();
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("关闭").clicked() {
+                            self.show_settings_window = false;
+                        }
+                    });
+                });
+            });
+
+        self.show_settings_window = open;
     }
 }
