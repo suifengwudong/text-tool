@@ -1,7 +1,7 @@
 use egui::{Context, RichText, Color32};
 use super::super::{
     TextToolApp, StructNode, StructKind, ChapterTag, NodeLink, RelationKind,
-    Foreshadow, node_at_mut,
+    Foreshadow, Milestone, StructViewMode, node_at_mut,
 };
 
 impl TextToolApp {
@@ -25,7 +25,23 @@ impl TextToolApp {
             .min_width(160.0)
             .show(ctx, |ui| {
                 ui.add_space(4.0);
-                ui.heading("章节结构");
+                ui.horizontal(|ui| {
+                    ui.heading("章节结构");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // View mode toggle
+                        let is_timeline = self.struct_view_mode == StructViewMode::Timeline;
+                        if ui.selectable_label(is_timeline, "🕐 时间轴")
+                            .on_hover_text("切换到时间轴视图").clicked()
+                        {
+                            self.struct_view_mode = StructViewMode::Timeline;
+                        }
+                        if ui.selectable_label(!is_timeline, "🌲 树形")
+                            .on_hover_text("切换到树形视图").clicked()
+                        {
+                            self.struct_view_mode = StructViewMode::Tree;
+                        }
+                    });
+                });
                 ui.separator();
 
                 // Add root node controls
@@ -53,13 +69,22 @@ impl TextToolApp {
                 ui.separator();
 
                 egui::ScrollArea::vertical().id_salt("struct_tree_scroll").show(ui, |ui| {
-                    let roots_snapshot = self.struct_roots.clone();
-                    let selected = self.selected_node_path.clone();
-                    Self::draw_struct_tree(
-                        ui, &roots_snapshot, &selected, &[],
-                        &mut add_child, &mut remove_node, &mut move_up,
-                        &mut self.selected_node_path,
-                    );
+                    if self.struct_view_mode == StructViewMode::Tree {
+                        let roots_snapshot = self.struct_roots.clone();
+                        let selected = self.selected_node_path.clone();
+                        Self::draw_struct_tree(
+                            ui, &roots_snapshot, &selected, &[],
+                            &mut add_child, &mut remove_node, &mut move_up,
+                            &mut self.selected_node_path,
+                        );
+                    } else {
+                        let roots_snapshot = self.struct_roots.clone();
+                        let selected = self.selected_node_path.clone();
+                        Self::draw_struct_timeline(
+                            ui, &roots_snapshot, &selected, &[],
+                            &mut self.selected_node_path,
+                        );
+                    }
                 });
 
                 ui.separator();
@@ -134,6 +159,8 @@ impl TextToolApp {
                 ui.separator();
                 // Foreshadow management when nothing is selected
                 self.draw_foreshadow_section(ui);
+                ui.add_space(4.0);
+                self.draw_milestone_section(ui);
                 return;
             }
 
@@ -333,6 +360,8 @@ impl TextToolApp {
             // Foreshadow section at the bottom
             ui.separator();
             self.draw_foreshadow_section(ui);
+            ui.add_space(4.0);
+            self.draw_milestone_section(ui);
         });
     }
 
@@ -525,6 +554,178 @@ impl TextToolApp {
                     });
                 }
             });
+        });
+    }
+
+    // ── Timeline view renderer (flat ordered list of all nodes) ──────────────
+
+    /// Render all struct nodes in a flat vertical sequence with colored tag badges,
+    /// providing a "timeline" alternative to the nested tree view.
+    fn draw_struct_timeline(
+        ui: &mut egui::Ui,
+        nodes: &[StructNode],
+        selected: &[usize],
+        path: &[usize],
+        selected_path: &mut Vec<usize>,
+    ) {
+        for (i, node) in nodes.iter().enumerate() {
+            let mut cur_path = path.to_vec();
+            cur_path.push(i);
+            let is_selected = *selected == cur_path;
+
+            // Indentation based on depth
+            let indent = path.len() as f32 * 10.0;
+            let bg_color = if is_selected {
+                Color32::from_rgb(0, 100, 170)
+            } else if node.done {
+                Color32::from_gray(38)
+            } else {
+                Color32::from_gray(28)
+            };
+
+            egui::Frame::none()
+                .fill(bg_color)
+                .rounding(4.0)
+                .inner_margin(egui::Margin::symmetric(6.0, 3.0))
+                .show(ui, |ui| {
+                    ui.set_min_width(ui.available_width() - indent);
+                    ui.horizontal(|ui| {
+                        ui.add_space(indent);
+                        // Kind icon
+                        ui.label(RichText::new(node.kind.icon()).small());
+                        // Title (clickable)
+                        let title_resp = ui.selectable_label(is_selected,
+                            RichText::new(&node.title).size(13.0));
+                        if title_resp.clicked() {
+                            *selected_path = cur_path.clone();
+                        }
+                        // Tag badge
+                        if node.tag != ChapterTag::Normal {
+                            ui.label(
+                                RichText::new(node.tag.label())
+                                    .small()
+                                    .color(node.tag.color()),
+                            );
+                        }
+                        // Done badge
+                        ui.label(RichText::new(if node.done { "✅" } else { "⏳" }).small());
+                    });
+                });
+
+            ui.add_space(2.0);
+
+            // Recurse into children
+            if !node.children.is_empty() {
+                Self::draw_struct_timeline(
+                    ui, &node.children, selected, &cur_path, selected_path,
+                );
+            }
+        }
+    }
+
+    // ── Milestone sub-section ─────────────────────────────────────────────────
+
+    fn draw_milestone_section(&mut self, ui: &mut egui::Ui) {
+        // Snapshot completion info for display before mutable borrow
+        let total = self.milestones.len();
+        let done = self.milestones.iter().filter(|m| m.completed).count();
+
+        ui.group(|ui| {
+            ui.horizontal(|ui| {
+                ui.heading("里程碑");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("💾 同步到 JSON").clicked() {
+                        self.sync_milestones_to_json();
+                    }
+                });
+            });
+            ui.separator();
+
+            // Progress bar
+            if total > 0 {
+                ui.horizontal(|ui| {
+                    ui.label(format!("完成: {done}/{total}"));
+                    ui.add(
+                        egui::ProgressBar::new(done as f32 / total as f32)
+                            .desired_width(140.0),
+                    );
+                });
+                ui.add_space(4.0);
+            }
+
+            // Add milestone row
+            ui.horizontal(|ui| {
+                ui.text_edit_singleline(&mut self.new_ms_name)
+                    .on_hover_text("输入里程碑名称");
+                if ui.button("➕ 添加").clicked() {
+                    let name = self.new_ms_name.trim().to_owned();
+                    if !name.is_empty() {
+                        let idx = self.milestones.len();
+                        self.milestones.push(Milestone::new(&name));
+                        self.selected_ms_idx = Some(idx);
+                        self.new_ms_name.clear();
+                    }
+                }
+            });
+
+            ui.add_space(4.0);
+
+            // Milestone list
+            egui::ScrollArea::vertical()
+                .id_salt("milestone_list_scroll")
+                .max_height(160.0)
+                .show(ui, |ui| {
+                    let mut to_remove: Option<usize> = None;
+                    for (i, ms) in self.milestones.iter_mut().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut ms.completed, "");
+                            let label = if ms.completed {
+                                RichText::new(&ms.name)
+                                    .color(Color32::from_rgb(100, 200, 100))
+                                    .strikethrough()
+                            } else {
+                                RichText::new(&ms.name)
+                                    .color(ui.visuals().text_color())
+                            };
+                            let resp = ui.selectable_label(
+                                self.selected_ms_idx == Some(i),
+                                label,
+                            );
+                            if resp.clicked() {
+                                self.selected_ms_idx = Some(i);
+                            }
+                            resp.context_menu(|ui| {
+                                if ui.button("删除").clicked() {
+                                    to_remove = Some(i);
+                                    ui.close_menu();
+                                }
+                            });
+                        });
+                    }
+                    if let Some(idx) = to_remove {
+                        self.milestones.remove(idx);
+                        if self.selected_ms_idx == Some(idx) {
+                            self.selected_ms_idx = None;
+                        } else if let Some(sel) = self.selected_ms_idx {
+                            if sel > idx {
+                                self.selected_ms_idx = Some(sel - 1);
+                            }
+                        }
+                    }
+                });
+
+            // Selected milestone editor
+            if let Some(idx) = self.selected_ms_idx {
+                if let Some(ms) = self.milestones.get_mut(idx) {
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.label("名称:");
+                        ui.text_edit_singleline(&mut ms.name);
+                    });
+                    ui.label("说明:");
+                    ui.text_edit_multiline(&mut ms.description);
+                }
+            }
         });
     }
 }

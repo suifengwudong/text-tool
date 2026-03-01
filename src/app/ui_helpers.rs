@@ -72,6 +72,10 @@ impl TextToolApp {
                         self.sync_foreshadows_to_md();
                         ui.close_menu();
                     }
+                    if ui.button("同步里程碑到 JSON").clicked() {
+                        self.sync_milestones_to_json();
+                        ui.close_menu();
+                    }
                 });
 
                 ui.menu_button("设置", |ui| {

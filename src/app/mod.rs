@@ -137,6 +137,19 @@ impl TextToolApp {
             foreshadows: vec![],
             selected_fs_idx: None,
             new_fs_name: String::new(),
+            milestones: vec![
+                Milestone::new("完成 VS Code 风格 UI 复刻"),
+                Milestone::new("实现本地 MD/JSON 文件操作"),
+                Milestone::new("完成轻量化基础（体积/速度/内存）"),
+                Milestone::new("完成人设图形化编辑器（卡片视图）"),
+                Milestone::new("完成章节时间轴编辑器"),
+                Milestone::new("完成大纲树与伏笔管理"),
+                Milestone::new("接入本地 LLM 模型"),
+            ],
+            selected_ms_idx: None,
+            new_ms_name: String::new(),
+            obj_view_mode: ObjectViewMode::List,
+            struct_view_mode: StructViewMode::Tree,
             llm_config: LlmConfig {
                 model_path: String::new(),
                 api_url: "http://localhost:11434/api/generate".to_owned(),
@@ -291,6 +304,25 @@ impl TextToolApp {
                         self.status = format!("保存章节结构失败: {e}");
                     } else {
                         self.status = "章节结构已同步到 Design/章节结构.json".to_owned();
+                    }
+                }
+                Err(e) => self.status = format!("序列化失败: {e}"),
+            }
+        } else {
+            self.status = "请先打开一个项目".to_owned();
+        }
+    }
+
+    /// Sync: save milestones to Design/里程碑.json.
+    pub(super) fn sync_milestones_to_json(&mut self) {
+        if let Some(root) = &self.project_root {
+            let path = root.join("Design").join("里程碑.json");
+            match serde_json::to_string_pretty(&self.milestones) {
+                Ok(json) => {
+                    if let Err(e) = std::fs::write(&path, &json) {
+                        self.status = format!("保存里程碑失败: {e}");
+                    } else {
+                        self.status = "里程碑已同步到 Design/里程碑.json".to_owned();
                     }
                 }
                 Err(e) => self.status = format!("序列化失败: {e}"),

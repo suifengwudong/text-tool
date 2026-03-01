@@ -1,7 +1,7 @@
 use egui::{Context, RichText, Color32};
 use super::super::{
     TextToolApp, WorldObject, ObjectKind, ObjectLink, LinkTarget, RelationKind,
-    StructNode,
+    StructNode, ObjectViewMode,
 };
 
 impl TextToolApp {
@@ -21,7 +21,23 @@ impl TextToolApp {
             .min_width(130.0)
             .show(ctx, |ui| {
                 ui.add_space(4.0);
-                ui.heading("世界对象");
+                ui.horizontal(|ui| {
+                    ui.heading("世界对象");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // View mode toggle
+                        let is_card = self.obj_view_mode == ObjectViewMode::Card;
+                        if ui.selectable_label(is_card, "🃏 卡片")
+                            .on_hover_text("切换到卡片视图").clicked()
+                        {
+                            self.obj_view_mode = ObjectViewMode::Card;
+                        }
+                        if ui.selectable_label(!is_card, "☰ 列表")
+                            .on_hover_text("切换到列表视图").clicked()
+                        {
+                            self.obj_view_mode = ObjectViewMode::List;
+                        }
+                    });
+                });
                 ui.separator();
 
                 // Kind filter chips
@@ -46,22 +62,85 @@ impl TextToolApp {
                 ui.separator();
 
                 egui::ScrollArea::vertical().id_salt("obj_list_scroll").show(ui, |ui| {
-                    for (i, obj) in self.world_objects.iter().enumerate() {
-                        // Apply kind filter
-                        if let Some(ref filter) = self.obj_kind_filter {
-                            if &obj.kind != filter { continue; }
-                        }
-                        let selected = self.selected_obj_idx == Some(i);
-                        let label = format!("{} {}", obj.icon(), obj.name);
-                        let resp = ui.selectable_label(selected, &label);
-                        resp.context_menu(|ui| {
-                            if ui.button("删除").clicked() {
-                                remove_obj = Some(i);
-                                ui.close_menu();
+                    if self.obj_view_mode == ObjectViewMode::List {
+                        for (i, obj) in self.world_objects.iter().enumerate() {
+                            // Apply kind filter
+                            if let Some(ref filter) = self.obj_kind_filter {
+                                if &obj.kind != filter { continue; }
                             }
-                        });
-                        if resp.clicked() {
-                            open_obj = Some(i);
+                            let selected = self.selected_obj_idx == Some(i);
+                            let label = format!("{} {}", obj.icon(), obj.name);
+                            let resp = ui.selectable_label(selected, &label);
+                            resp.context_menu(|ui| {
+                                if ui.button("删除").clicked() {
+                                    remove_obj = Some(i);
+                                    ui.close_menu();
+                                }
+                            });
+                            if resp.clicked() {
+                                open_obj = Some(i);
+                            }
+                        }
+                    } else {
+                        // Card view: each object as a small styled card
+                        for (i, obj) in self.world_objects.iter().enumerate() {
+                            // Apply kind filter
+                            if let Some(ref filter) = self.obj_kind_filter {
+                                if &obj.kind != filter { continue; }
+                            }
+                            let selected = self.selected_obj_idx == Some(i);
+                            let bg = if selected {
+                                Color32::from_rgb(0, 80, 140)
+                            } else {
+                                Color32::from_gray(38)
+                            };
+                            let card_resp = egui::Frame::none()
+                                .fill(bg)
+                                .rounding(6.0)
+                                .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+                                .show(ui, |ui| {
+                                    ui.set_min_width(ui.available_width());
+                                    ui.horizontal(|ui| {
+                                        ui.label(RichText::new(obj.icon()).size(20.0));
+                                        ui.vertical(|ui| {
+                                            ui.label(RichText::new(&obj.name).strong());
+                                            ui.label(
+                                                RichText::new(obj.kind.label())
+                                                    .small()
+                                                    .color(Color32::from_gray(160)),
+                                            );
+                                            if !obj.description.is_empty() {
+                                                let preview: String = obj.description
+                                                    .chars().take(30).collect();
+                                                let suffix = if obj.description.chars().count() > 30 { "…" } else { "" };
+                                                ui.label(
+                                                    RichText::new(format!("{preview}{suffix}"))
+                                                        .small()
+                                                        .color(Color32::from_gray(140)),
+                                                );
+                                            }
+                                            if !obj.links.is_empty() {
+                                                ui.label(
+                                                    RichText::new(format!("🔗 {} 个关联", obj.links.len()))
+                                                        .small()
+                                                        .color(Color32::from_rgb(120, 180, 240)),
+                                                );
+                                            }
+                                        });
+                                    });
+                                })
+                                .response;
+                            let card_resp = card_resp.interact(egui::Sense::click());
+                            card_resp.context_menu(|ui| {
+                                if ui.button("删除").clicked() {
+                                    remove_obj = Some(i);
+                                    ui.close_menu();
+                                }
+                            });
+                            if card_resp.clicked() {
+                                open_obj = Some(i);
+                            }
+                            ui.add_space(4.0);
                         }
                     }
                 });
