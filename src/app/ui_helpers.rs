@@ -27,12 +27,8 @@ impl TextToolApp {
                         ui.close_menu();
                     }
                     ui.separator();
-                    if ui.button("保存左侧  Ctrl+S").clicked() {
+                    if ui.button("保存  Ctrl+S").clicked() {
                         self.save_left();
-                        ui.close_menu();
-                    }
-                    if ui.button("保存右侧  Ctrl+Shift+S").clicked() {
-                        self.save_right();
                         ui.close_menu();
                     }
                     ui.separator();
@@ -45,12 +41,8 @@ impl TextToolApp {
                         ui.close_menu();
                     }
                     ui.separator();
-                    if ui.button("导出左侧文件…").clicked() {
+                    if ui.button("导出当前文件…").clicked() {
                         self.export_left();
-                        ui.close_menu();
-                    }
-                    if ui.button("导出右侧文件…").clicked() {
-                        self.export_right();
                         ui.close_menu();
                     }
                 });
@@ -192,7 +184,7 @@ impl TextToolApp {
                 ui.label(RichText::new(&self.status).color(status_color));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
-                        RichText::new("Ctrl+S 保存  Ctrl+Z 撤销  Ctrl+Shift+S 保存右侧  Ctrl+滚轮 缩放预览")
+                        RichText::new("Ctrl+S 保存  Ctrl+Z 撤销  Ctrl+滚轮 缩放字体  F2 重命名")
                             .color(Color32::from_gray(120))
                             .small(),
                     );
@@ -247,17 +239,18 @@ impl TextToolApp {
             let ctrl_scroll = if ctrl { i.smooth_scroll_delta.y } else { 0.0 };
             (
                 ctrl && !shift && i.key_pressed(Key::S),           // Ctrl+S
-                ctrl && shift && i.key_pressed(Key::S),            // Ctrl+Shift+S
+                ctrl && shift && i.key_pressed(Key::S),            // Ctrl+Shift+S (save json/backup)
                 ctrl && !shift && i.key_pressed(Key::Z),           // Ctrl+Z
-                ctrl && shift && i.key_pressed(Key::F),            // Ctrl+Shift+F
-                ctrl && !shift && i.key_pressed(Key::B),           // Ctrl+B
-                ctrl && !shift && i.key_pressed(Key::I),           // Ctrl+I
-                !ctrl && !shift && i.key_pressed(Key::Tab),        // Tab
-                ctrl && i.key_pressed(Key::Equals),                 // Ctrl++/=
-                ctrl && i.key_pressed(Key::Minus),                  // Ctrl+-
-                ctrl && i.key_pressed(Key::Num0),                   // Ctrl+0 reset
+                ctrl && shift && i.key_pressed(Key::F),            // Ctrl+Shift+F search
+                ctrl && !shift && i.key_pressed(Key::B),           // Ctrl+B bold
+                ctrl && !shift && i.key_pressed(Key::I),           // Ctrl+I italic
+                !ctrl && !shift && i.key_pressed(Key::Tab),        // Tab indent
+                ctrl && i.key_pressed(Key::Equals),                 // Ctrl++/= zoom in
+                ctrl && i.key_pressed(Key::Minus),                  // Ctrl+- zoom out
+                ctrl && i.key_pressed(Key::Num0),                   // Ctrl+0 reset zoom
                 ctrl_scroll,                                        // Ctrl+scroll
                 !ctrl && !shift && i.key_pressed(Key::F2),         // F2 rename
+                ctrl && !shift && i.key_pressed(Key::P),           // Ctrl+P preview toggle
             )
         });
         if input.0 {
@@ -296,26 +289,44 @@ impl TextToolApp {
         if input.6 && self.last_focused_left {
             self.insert_tab_spaces(ctx);
         }
-        // Ctrl++ / Ctrl+scroll up: increase preview font size
+        // Ctrl++ / Ctrl+scroll up: increase font size (editor or preview)
         if input.7 {
-            self.md_settings.preview_font_size = (self.md_settings.preview_font_size + 1.0).min(36.0);
+            if self.left_preview_mode {
+                self.md_settings.preview_font_size = (self.md_settings.preview_font_size + 1.0).min(36.0);
+            } else {
+                self.md_settings.editor_font_size = (self.md_settings.editor_font_size + 1.0).min(36.0);
+            }
             self.save_config();
         }
-        // Ctrl+- / Ctrl+scroll down: decrease preview font size
+        // Ctrl+- / Ctrl+scroll down: decrease font size
         if input.8 {
-            self.md_settings.preview_font_size = (self.md_settings.preview_font_size - 1.0).max(8.0);
+            if self.left_preview_mode {
+                self.md_settings.preview_font_size = (self.md_settings.preview_font_size - 1.0).max(8.0);
+            } else {
+                self.md_settings.editor_font_size = (self.md_settings.editor_font_size - 1.0).max(8.0);
+            }
             self.save_config();
         }
-        // Ctrl+0: reset preview font size
+        // Ctrl+0: reset font size
         if input.9 {
-            self.md_settings.preview_font_size = crate::app::MarkdownSettings::default().preview_font_size;
+            let def = crate::app::MarkdownSettings::default();
+            if self.left_preview_mode {
+                self.md_settings.preview_font_size = def.preview_font_size;
+            } else {
+                self.md_settings.editor_font_size = def.editor_font_size;
+            }
             self.save_config();
         }
-        // Ctrl+scroll: adjust preview font size
+        // Ctrl+scroll: adjust font size (editor or preview based on current mode)
         if input.10.abs() > CTRL_SCROLL_THRESHOLD {
             let delta = if input.10 > 0.0 { 1.0_f32 } else { -1.0_f32 };
-            self.md_settings.preview_font_size = (self.md_settings.preview_font_size + delta)
-                .clamp(8.0, 36.0);
+            if self.left_preview_mode {
+                self.md_settings.preview_font_size = (self.md_settings.preview_font_size + delta)
+                    .clamp(8.0, 36.0);
+            } else {
+                self.md_settings.editor_font_size = (self.md_settings.editor_font_size + delta)
+                    .clamp(8.0, 36.0);
+            }
             self.save_config();
         }
         // F2: rename selected file in navigation
@@ -328,6 +339,13 @@ impl TextToolApp {
                     path,
                     new_name: current_name,
                 });
+            }
+        }
+        // Ctrl+P: toggle preview mode (only for markdown files)
+        if input.12 {
+            let is_md = self.left_file.as_ref().map(|f| f.is_markdown()).unwrap_or(false);
+            if is_md {
+                self.left_preview_mode = !self.left_preview_mode;
             }
         }
     }
@@ -402,16 +420,6 @@ impl TextToolApp {
         }
     }
 
-    pub(super) fn export_right(&self) {
-        if let Some(f) = &self.right_file {
-            if let Some(dest) = rfd_save_file(&f.path) {
-                if let Err(e) = std::fs::write(&dest, &f.content) {
-                    eprintln!("导出失败: {e}");
-                }
-            }
-        }
-    }
-
     /// Draw the floating editor settings window.
     pub(super) fn draw_settings_window(&mut self, ctx: &Context) {
         if !self.show_settings_window {
@@ -428,8 +436,46 @@ impl TextToolApp {
             .show(ctx, |ui| {
                 ui.add_space(4.0);
 
+                // ── Editor ────────────────────────────────────────────────────
+                ui.heading("编辑器");
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    ui.label("编辑器字体大小:");
+                    let prev_esz = self.md_settings.editor_font_size;
+                    ui.add(
+                        egui::Slider::new(&mut self.md_settings.editor_font_size, 8.0..=36.0)
+                            .step_by(1.0)
+                            .suffix(" px"),
+                    );
+                    if (self.md_settings.editor_font_size - prev_esz).abs() > f32::EPSILON {
+                        self.save_config();
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Tab 缩进空格数:");
+                    let prev_tab = self.md_settings.tab_size;
+                    let mut tab_size = self.md_settings.tab_size as u32;
+                    ui.add(egui::Slider::new(&mut tab_size, 1..=8).step_by(1.0));
+                    self.md_settings.tab_size = tab_size as u8;
+                    if self.md_settings.tab_size != prev_tab { self.save_config(); }
+                });
+                ui.add_space(2.0);
+                let prev_ae = self.md_settings.auto_extract_structure;
+                ui.checkbox(
+                    &mut self.md_settings.auto_extract_structure,
+                    "Ctrl+S 保存时自动从 Markdown 标题提取章节结构",
+                );
+                if self.md_settings.auto_extract_structure != prev_ae { self.save_config(); }
+                ui.label(
+                    RichText::new("Ctrl+滚轮 / Ctrl+= / Ctrl+- 实时调整字体大小  Ctrl+P 切换预览")
+                        .small().color(Color32::from_gray(140)),
+                );
+
+                ui.add_space(6.0);
+                ui.separator();
+
                 // ── Markdown preview ───────────────────────────────────────────
-                ui.label(RichText::new("Markdown 预览").strong());
+                ui.heading("Markdown 预览");
                 ui.add_space(2.0);
                 ui.horizontal(|ui| {
                     ui.label("预览字体大小:");
@@ -443,10 +489,6 @@ impl TextToolApp {
                         self.save_config();
                     }
                 });
-                ui.label(
-                    RichText::new("Ctrl+滚轮 / Ctrl++ / Ctrl+- 也可实时调整字体大小")
-                        .small().color(Color32::from_gray(140)),
-                );
                 ui.add_space(2.0);
                 let prev = self.md_settings.default_to_preview;
                 ui.checkbox(
@@ -467,32 +509,9 @@ impl TextToolApp {
                     "隐藏 .json 文件（推荐：JSON 为内部数据，无需手动编辑）",
                 );
                 if self.md_settings.hide_json != prev_hide {
-                    // Immediately re-build the tree with the new filter setting.
                     self.refresh_tree();
                     self.save_config();
                 }
-
-                ui.add_space(6.0);
-                ui.separator();
-
-                // ── Editor behaviour ───────────────────────────────────────────
-                ui.label(RichText::new("编辑器行为").strong());
-                ui.add_space(2.0);
-                ui.horizontal(|ui| {
-                    ui.label("Tab 缩进空格数:");
-                    let prev_tab = self.md_settings.tab_size;
-                    let mut tab_size = self.md_settings.tab_size as u32;
-                    ui.add(egui::Slider::new(&mut tab_size, 1..=8).step_by(1.0));
-                    self.md_settings.tab_size = tab_size as u8;
-                    if self.md_settings.tab_size != prev_tab { self.save_config(); }
-                });
-                ui.add_space(2.0);
-                let prev_ae = self.md_settings.auto_extract_structure;
-                ui.checkbox(
-                    &mut self.md_settings.auto_extract_structure,
-                    "Ctrl+S 保存时自动从 Markdown 标题提取章节结构",
-                );
-                if self.md_settings.auto_extract_structure != prev_ae { self.save_config(); }
 
                 ui.add_space(6.0);
                 ui.separator();

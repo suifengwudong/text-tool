@@ -119,14 +119,14 @@ pub struct TextToolApp {
     // ── Theme ─────────────────────────────────────────────────────────────────
     pub(super) theme: AppTheme,
 
-    // ── Auto-save ─────────────────────────────────────────────────────────────
-    /// When the last auto-save ran (None = never run this session).
+    // ── Auto-save (Phase 5 — not yet active) ──────────────────────────────────
+    #[allow(dead_code)]
     pub(super) last_auto_save: Option<Instant>,
-    /// Human-readable timestamp of last auto-save for the status bar.
+    #[allow(dead_code)]
     pub(super) last_auto_save_label: String,
 
-    // ── Delete confirmation ────────────────────────────────────────────────────
-    /// File path pending deletion (move to 废稿) — shown in confirm dialog.
+    // ── Delete confirmation (Phase 5 — not yet active) ────────────────────────
+    #[allow(dead_code)]
     pub(super) delete_confirm_path: Option<PathBuf>,
 
     // ── Config persistence ────────────────────────────────────────────────────
@@ -940,6 +940,7 @@ mod tests {
             },
             last_project: Some("/home/user/my_novel".to_owned()),
             auto_load: true,
+            theme: AppTheme::Dark,
         };
         let json = serde_json::to_string_pretty(&cfg).unwrap();
         let d: AppConfig = serde_json::from_str(&json).unwrap();
@@ -1062,6 +1063,8 @@ mod tests {
         assert!(s.hide_json);
         assert_eq!(s.tab_size, 2);
         assert!(!s.auto_extract_structure);
+        assert!((s.editor_font_size - 13.0).abs() < 1e-5);
+        assert_eq!(s.auto_save_interval_secs, 60);
     }
 
     #[test]
@@ -1071,6 +1074,17 @@ mod tests {
         let s: MarkdownSettings = serde_json::from_str(old_json).unwrap();
         assert!(s.hide_json);        // should default to true
         assert_eq!(s.tab_size, 2);   // should default to 2
+        assert!((s.editor_font_size - 13.0).abs() < 1e-5); // should default to 13.0
+    }
+
+    #[test]
+    fn test_app_theme_default() {
+        let cfg: AppConfig = serde_json::from_str(
+            r#"{"llm_config":{"model_path":"","api_url":"","temperature":0.7,"max_tokens":512,"use_local":true,"system_prompt":""},
+                "md_settings":{"preview_font_size":14.0,"default_to_preview":false},
+                "last_project":null,"auto_load":false}"#
+        ).unwrap();
+        assert_eq!(cfg.theme, AppTheme::Dark); // serde default
     }
 
     #[test]
