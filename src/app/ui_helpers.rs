@@ -173,15 +173,28 @@ impl TextToolApp {
     pub(super) fn draw_status_bar(&self, ctx: &Context) {
         egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                // Color-code status by content
-                let status_color = if self.status.contains("失败") || self.status.contains("错误") {
+                const ERROR_WORDS:   &[&str] = &["失败", "错误"];
+                const SUCCESS_WORDS: &[&str] = &["完成", "已保存", "已同步", "已加载", "废稿"];
+
+                let status_color = if ERROR_WORDS.iter().any(|w| self.status.contains(w)) {
                     Color32::from_rgb(220, 80, 80)
-                } else if self.status.contains("完成") || self.status.contains("已保存") || self.status.contains("已同步") || self.status.contains("已加载") {
+                } else if SUCCESS_WORDS.iter().any(|w| self.status.contains(w)) {
                     Color32::from_rgb(100, 200, 120)
                 } else {
                     Color32::from_gray(180)
                 };
                 ui.label(RichText::new(&self.status).color(status_color));
+
+                // Auto-save indicator
+                if !self.last_auto_save_label.is_empty() {
+                    ui.separator();
+                    ui.label(
+                        RichText::new(format!("💾 自动保存 {}", self.last_auto_save_label))
+                            .small()
+                            .color(Color32::from_gray(130)),
+                    );
+                }
+
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
                         RichText::new("Ctrl+S 保存  Ctrl+Z 撤销  Ctrl+滚轮 缩放字体  F2 重命名")
@@ -191,6 +204,47 @@ impl TextToolApp {
                 });
             });
         });
+    }
+
+    /// Draw the delete-to-trash confirmation dialog.
+    pub(super) fn draw_delete_confirm_dialog(&mut self, ctx: &Context) {
+        let path = match self.delete_confirm_path.clone() {
+            Some(p) => p,
+            None    => return,
+        };
+        let file_name = path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.to_string_lossy().into_owned());
+
+        let mut confirmed = false;
+        let mut cancelled = false;
+
+        egui::Window::new("确认删除")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(format!("将「{file_name}」移入废稿文件夹？"));
+                ui.label(
+                    RichText::new("此操作可在废稿文件夹中恢复。")
+                        .small().color(Color32::from_gray(150)),
+                );
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("移入废稿").clicked() { confirmed = true; }
+                    if ui.button("取消").clicked()    { cancelled = true; }
+                });
+                if ctx.input(|i| i.key_pressed(Key::Escape)) { cancelled = true; }
+                if ctx.input(|i| i.key_pressed(Key::Enter))  { confirmed = true; }
+            });
+
+        if confirmed {
+            self.delete_confirm_path = None;
+            let path_to_delete = path.clone();
+            self.move_to_trash(&path_to_delete);
+        } else if cancelled {
+            self.delete_confirm_path = None;
+        }
     }
 
     pub(super) fn draw_new_file_dialog(&mut self, ctx: &Context) {
@@ -500,8 +554,47 @@ impl TextToolApp {
                 ui.add_space(6.0);
                 ui.separator();
 
+                // ── 自动保存 ─────────────────────────────────────────────────────
+                ui.heading("自动保存");
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    ui.label("自动保存间隔:");
+                    let prev_int = self.md_settings.auto_save_interval_secs;
+                    let mut interval = self.md_settings.auto_save_interval_secs as u32;
+                    ui.add(
+                        egui::Slider::new(&mut interval, 0..=300)
+                            .step_by(10.0)
+                            .suffix(" 秒"),
+                    );
+                    self.md_settings.auto_save_interval_secs = interval;
+                    if self.md_settings.auto_save_interval_secs != prev_int {
+                        self.save_config();
+                    }
+                });
+                ui.label(
+                    RichText::new("0 = 关闭自动保存；状态栏显示上次自动保存时间")
+                        .small().color(Color32::from_gray(140)),
+                );
+
+                ui.add_space(6.0);
+                ui.separator();
+
+                // ── 主题 ─────────────────────────────────────────────────────────
+                ui.heading("界面主题");
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    let prev_theme = self.theme;
+                    for &t in crate::app::AppTheme::all() {
+                        ui.radio_value(&mut self.theme, t, t.label());
+                    }
+                    if self.theme != prev_theme { self.save_config(); }
+                });
+
+                ui.add_space(6.0);
+                ui.separator();
+
                 // ── File tree ──────────────────────────────────────────────────
-                ui.label(RichText::new("文件树").strong());
+                ui.heading("文件树");
                 ui.add_space(2.0);
                 let prev_hide = self.md_settings.hide_json;
                 ui.checkbox(
@@ -517,7 +610,7 @@ impl TextToolApp {
                 ui.separator();
 
                 // ── Data sync ─────────────────────────────────────────────────
-                ui.label(RichText::new("数据同步").strong());
+                ui.heading("数据同步");
                 ui.add_space(2.0);
                 let prev_al = self.auto_load_from_files;
                 ui.checkbox(

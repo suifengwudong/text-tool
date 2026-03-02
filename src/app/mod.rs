@@ -11,6 +11,35 @@ fn dirs_home() -> Option<PathBuf> {
     { std::env::var_os("HOME").map(PathBuf::from) }
 }
 
+/// Return a local-time-like HH:MM:SS string for display in the status bar.
+///
+/// We derive hours/minutes/seconds from the local timezone offset by reading
+/// the `TZ` environment variable offset (best-effort). If the offset cannot
+/// be determined we fall back to showing elapsed seconds since epoch mod 86400,
+/// which gives the correct value for UTC+0 and is always monotonically correct
+/// within a day.  No external crate is needed.
+fn chrono_label() -> String {
+    // Best-effort local-time from SystemTime + timezone env var.
+    let utc_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
+    // Read TZ offset hours from env (e.g. "Asia/Shanghai" won't parse but
+    // "UTC+8" or "+0800" style vars might be set via TZOFFSET).
+    let offset_secs: i64 = std::env::var("TZOFFSET")
+        .ok()
+        .and_then(|s| s.parse::<i64>().ok())
+        .map(|h| h * 3600)
+        .unwrap_or(0);
+
+    let local = (utc_secs + offset_secs).rem_euclid(86400);
+    let hh = local / 3600;
+    let mm = (local % 3600) / 60;
+    let ss = local % 60;
+    format!("{hh:02}:{mm:02}:{ss:02}")
+}
+
 mod models;
 mod file_manager;
 mod llm_backend;
@@ -119,14 +148,14 @@ pub struct TextToolApp {
     // ── Theme ─────────────────────────────────────────────────────────────────
     pub(super) theme: AppTheme,
 
-    // ── Auto-save (Phase 5 — not yet active) ──────────────────────────────────
-    #[allow(dead_code)]
+    // ── Auto-save ─────────────────────────────────────────────────────────────
+    /// When the last auto-save ran (None = not yet started this session).
     pub(super) last_auto_save: Option<Instant>,
-    #[allow(dead_code)]
+    /// Human-readable HH:MM:SS of last auto-save shown in the status bar.
     pub(super) last_auto_save_label: String,
 
-    // ── Delete confirmation (Phase 5 — not yet active) ────────────────────────
-    #[allow(dead_code)]
+    // ── Delete confirmation ────────────────────────────────────────────────────
+    /// File path pending deletion (move to 废稿) — shown in confirm dialog.
     pub(super) delete_confirm_path: Option<PathBuf>,
 
     // ── Config persistence ────────────────────────────────────────────────────
@@ -440,16 +469,69 @@ impl TextToolApp {
             self.refresh_tree();
             self.status = format!("已重命名: {}", new_name);
         }
+    }    /// Move `path` into the project's `废稿/` folder.
+    /// Creates `废稿/` if it doesn't exist. Appends a numeric suffix if a
+    /// file with the same name already exists there.
+    pub(super) fn move_to_trash(&mut self, path: &Path) {
+        let Some(root) = self.project_root.clone() else {
+            self.status = "无法删除：未打开项目".to_owned();
+            return;
+        };
+        let trash_dir = root.join("废稿");
+        if let Err(e) = std::fs::create_dir_all(&trash_dir) {
+            self.status = format!("无法创建废稿文件夹: {e}");
+            return;
+        }
+        let file_name = path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "unknown".to_owned());
+
+        // Resolve collision by appending _1, _2, … before the extension.
+        let dest = {
+            let stem = Path::new(&file_name).file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| file_name.clone());
+            let ext  = Path::new(&file_name).extension()
+                .map(|e| format!(".{}", e.to_string_lossy()))
+                .unwrap_or_default();
+            let mut candidate = trash_dir.join(&file_name);
+            let mut idx = 1u32;
+            while candidate.exists() {
+                candidate = trash_dir.join(format!("{stem}_{idx}{ext}"));
+                idx += 1;
+            }
+            candidate
+        };
+
+        // Close the file if it's currently open in an editor pane.
+        if self.left_file.as_ref().map(|f| f.path.as_path()) == Some(path) {
+            self.left_file = None;
+        }
+        if self.right_file.as_ref().map(|f| f.path.as_path()) == Some(path) {
+            self.right_file = None;
+        }
+        if self.selected_file_path.as_deref() == Some(path) {
+            self.selected_file_path = None;
+        }
+
+        if let Err(e) = std::fs::rename(path, &dest) {
+            self.status = format!("移动失败: {e}");
+        } else {
+            let dest_name = dest.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            self.status = format!("已移入废稿: {dest_name}");
+            self.refresh_tree();
+        }
     }
 
-
-
-    /// Snapshot the current project data into a `SkillSet` for the agent backend.
     pub(super) fn build_skill_set(&self) -> SkillSet {
         SkillSet::new(
             self.world_objects.clone(),
             self.struct_roots.clone(),
             self.foreshadows.clone(),
+            self.milestones.clone(),
+            self.project_root.clone(),
         )
     }
 
@@ -535,8 +617,44 @@ impl TextToolApp {
 
 impl eframe::App for TextToolApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Apply theme every frame (cheap: egui diffs visuals internally)
+        ctx.set_visuals(match self.theme {
+            AppTheme::Dark  => egui::Visuals::dark(),
+            AppTheme::Light => egui::Visuals::light(),
+        });
+
         // Keyboard shortcuts (checked before UI to avoid conflicts)
         self.handle_keyboard(ctx);
+
+        // ── Auto-save tick ────────────────────────────────────────────────────
+        if self.md_settings.auto_save_interval_secs > 0 {
+            let interval = self.md_settings.auto_save_interval_secs as u64;
+            let should_save = match self.last_auto_save {
+                None => false, // don't save on the very first frame
+                Some(last) => last.elapsed().as_secs() >= interval,
+            };
+            if should_save {
+                let mut saved_any = false;
+                if let Some(f) = &mut self.left_file {
+                    if f.modified && f.save().is_ok() { saved_any = true; }
+                }
+                if let Some(f) = &mut self.right_file {
+                    if f.modified && f.save().is_ok() { saved_any = true; }
+                }
+                self.last_auto_save = Some(Instant::now());
+                if saved_any {
+                    // Record elapsed time since session start as a human-readable label.
+                    // (We avoid a UTC clock to sidestep timezone issues without a date library.)
+                    self.last_auto_save_label = chrono_label();
+                }
+            }
+            // Start the clock after the first frame so the user gets a full interval.
+            if self.last_auto_save.is_none() {
+                self.last_auto_save = Some(Instant::now());
+            }
+            // Request a repaint so we check again after the interval.
+            ctx.request_repaint_after(std::time::Duration::from_secs(interval));
+        }
 
         // UI layers always visible
         self.draw_menu_bar(ctx);
@@ -563,6 +681,7 @@ impl eframe::App for TextToolApp {
         // Dialogs
         self.draw_new_file_dialog(ctx);
         self.draw_rename_dialog(ctx);
+        self.draw_delete_confirm_dialog(ctx);
         self.draw_settings_window(ctx);
         self.draw_search_window(ctx);
     }

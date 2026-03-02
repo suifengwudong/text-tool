@@ -411,14 +411,12 @@ pub enum AppTheme {
 }
 
 impl AppTheme {
-    #[allow(dead_code)]
     pub fn label(self) -> &'static str {
         match self {
             AppTheme::Dark  => "暗色",
             AppTheme::Light => "亮色",
         }
     }
-    #[allow(dead_code)]
     pub fn all() -> &'static [AppTheme] {
         &[AppTheme::Dark, AppTheme::Light]
     }

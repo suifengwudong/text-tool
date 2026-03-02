@@ -13,6 +13,7 @@ impl TextToolApp {
         let mut toggle_path: Option<PathBuf> = None;
         let mut select_path: Option<PathBuf> = None;
         let mut rename_path: Option<PathBuf> = None;
+        let mut delete_path: Option<PathBuf> = None;
 
         egui::SidePanel::left("file_tree")
             .resizable(true)
@@ -84,7 +85,7 @@ impl TextToolApp {
                                     ui, node, 0,
                                     &mut open_left, &mut open_right, &mut new_in,
                                     &mut toggle_path, selected, &mut select_path,
-                                    &mut rename_path,
+                                    &mut rename_path, &mut delete_path,
                                 );
                             }
                         } else {
@@ -138,6 +139,10 @@ impl TextToolApp {
                 path: p,
                 new_name: current_name,
             });
+        }
+        // Open delete confirmation dialog (deferred to avoid borrow conflict)
+        if let Some(p) = delete_path {
+            self.delete_confirm_path = Some(p);
         }
 
         // Handle F2 key: open rename dialog for selected file when panel is focused
@@ -215,6 +220,7 @@ impl TextToolApp {
         selected_path: &Option<PathBuf>,
         select_path: &mut Option<PathBuf>,
         rename_path: &mut Option<PathBuf>,
+        delete_path: &mut Option<PathBuf>,
     ) {
         let indent = depth as f32 * 12.0;
         ui.horizontal(|ui| {
@@ -254,6 +260,10 @@ impl TextToolApp {
                         *rename_path = Some(node.path.clone());
                         ui.close_menu();
                     }
+                    if ui.button("🗑 删除 (移入废稿)").clicked() {
+                        *delete_path = Some(node.path.clone());
+                        ui.close_menu();
+                    }
                 });
                 if resp.clicked() {
                     *select_path = Some(node.path.clone());
@@ -269,7 +279,7 @@ impl TextToolApp {
         if node.is_dir && node.expanded {
             for child in &node.children {
                 Self::draw_tree_node(ui, child, depth + 1, open_left, open_right, new_in,
-                    toggle_path, selected_path, select_path, rename_path);
+                    toggle_path, selected_path, select_path, rename_path, delete_path);
             }
         }
     }
