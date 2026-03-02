@@ -395,6 +395,8 @@ impl TextToolApp {
         add_child: &mut Option<(Vec<usize>, String, StructKind)>,
         remove_node: &mut Option<Vec<usize>>,
         move_up: &mut Option<Vec<usize>>,
+        // Drag-and-drop reorder target for root-level nodes only.
+        // Passed through recursion unchanged; only written when `path.is_empty()`.
         root_dnd_move: &mut Option<(usize, usize)>,
         selected_path: &mut Vec<usize>,
     ) {

@@ -64,6 +64,8 @@ impl TextToolApp {
                 egui::ScrollArea::vertical().id_salt("obj_list_scroll").show(ui, |ui| {
                     if self.obj_view_mode == ObjectViewMode::List {
                         let mut pending_move: Option<(usize, usize)> = None;
+                        // Index loop required: we pass `i` as the DnD payload and need
+                        // to detect drops by index after the draw pass completes.
                         for i in 0..self.world_objects.len() {
                             let obj = &self.world_objects[i];
                             // Apply kind filter

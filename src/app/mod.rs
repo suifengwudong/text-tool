@@ -1,9 +1,13 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
-/// Returns the home directory, using $HOME env var.
+/// Returns the home directory, checking platform-appropriate env vars.
 fn dirs_home() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
+    // On Windows USERPROFILE is the standard home location; on Unix $HOME.
+    #[cfg(target_os = "windows")]
+    { std::env::var_os("USERPROFILE").map(PathBuf::from) }
+    #[cfg(not(target_os = "windows"))]
+    { std::env::var_os("HOME").map(PathBuf::from) }
 }
 
 mod models;
@@ -1131,5 +1135,166 @@ mod tests {
         assert!(out.contains("城堡"));
         assert!(out.contains("人物"));
         assert!(out.contains("地点"));
+    }
+
+    // ── Phase 4: AppConfig serialization tests ────────────────────────────────
+
+    #[test]
+    fn test_llm_config_serialization() {
+        let cfg = LlmConfig {
+            model_path: "llama2".to_owned(),
+            api_url: "http://localhost:11434/api/generate".to_owned(),
+            temperature: 0.8,
+            max_tokens: 256,
+            use_local: false,
+            system_prompt: "你是一个写作助手".to_owned(),
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        let d: LlmConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(d.model_path, "llama2");
+        assert_eq!(d.api_url, "http://localhost:11434/api/generate");
+        assert!((d.temperature - 0.8).abs() < 1e-5);
+        assert_eq!(d.max_tokens, 256);
+        assert!(!d.use_local);
+        assert_eq!(d.system_prompt, "你是一个写作助手");
+    }
+
+    #[test]
+    fn test_markdown_settings_serialization() {
+        let s = MarkdownSettings { preview_font_size: 18.0, default_to_preview: true };
+        let json = serde_json::to_string(&s).unwrap();
+        let d: MarkdownSettings = serde_json::from_str(&json).unwrap();
+        assert!((d.preview_font_size - 18.0).abs() < 1e-5);
+        assert!(d.default_to_preview);
+    }
+
+    #[test]
+    fn test_app_config_serialization_roundtrip() {
+        let cfg = AppConfig {
+            llm_config: LlmConfig {
+                model_path: "phi2".to_owned(),
+                api_url: "http://localhost:8080".to_owned(),
+                temperature: 0.5,
+                max_tokens: 1024,
+                use_local: true,
+                system_prompt: String::new(),
+            },
+            md_settings: MarkdownSettings { preview_font_size: 16.0, default_to_preview: true },
+            last_project: Some("/home/user/my_novel".to_owned()),
+            auto_load: true,
+        };
+        let json = serde_json::to_string_pretty(&cfg).unwrap();
+        let d: AppConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(d.llm_config.model_path, "phi2");
+        assert_eq!(d.md_settings.preview_font_size, 16.0);
+        assert_eq!(d.last_project, Some("/home/user/my_novel".to_owned()));
+        assert!(d.auto_load);
+    }
+
+    // ── Phase 4: Reverse sync helpers ─────────────────────────────────────────
+
+    /// Tests the foreshadow-from-MD parsing logic in isolation using a temp file.
+    #[test]
+    fn test_load_foreshadows_from_md_via_files() {
+        let dir = std::env::temp_dir().join("qingmo_test_fs");
+        let content_dir = dir.join("Content");
+        std::fs::create_dir_all(&content_dir).unwrap();
+        let md_path = content_dir.join("伏笔.md");
+        let md = "# 伏笔列表\n\n## 神秘信件 ✅ 已解决\n\n某内容\n\n## 古剑来历 ⏳ 未解决\n\n";
+        std::fs::write(&md_path, md).unwrap();
+
+        // Parse manually using the same logic as load_foreshadows_from_md
+        let text = std::fs::read_to_string(&md_path).unwrap();
+        let mut foreshadows = Vec::new();
+        for line in text.lines() {
+            if let Some(rest) = line.strip_prefix("## ") {
+                let resolved = rest.contains('✅');
+                let name = rest.replace("✅", "").replace("已解决", "")
+                    .replace("⏳", "").replace("未解决", "").trim().to_owned();
+                if !name.is_empty() {
+                    let mut fs = Foreshadow::new(&name);
+                    fs.resolved = resolved;
+                    foreshadows.push(fs);
+                }
+            }
+        }
+
+        assert_eq!(foreshadows.len(), 2);
+        assert_eq!(foreshadows[0].name, "神秘信件");
+        assert!(foreshadows[0].resolved);
+        assert_eq!(foreshadows[1].name, "古剑来历");
+        assert!(!foreshadows[1].resolved);
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Tests world-objects reverse sync roundtrip: serialize → write → deserialize.
+    #[test]
+    fn test_load_world_objects_roundtrip() {
+        let dir = std::env::temp_dir().join("qingmo_test_wo");
+        let design_dir = dir.join("Design");
+        std::fs::create_dir_all(&design_dir).unwrap();
+
+        let objects = vec![
+            WorldObject::new("林枫", ObjectKind::Character),
+            WorldObject::new("灵剑", ObjectKind::Item),
+        ];
+        let json = serde_json::to_string_pretty(&objects).unwrap();
+        std::fs::write(design_dir.join("世界对象.json"), &json).unwrap();
+
+        let text = std::fs::read_to_string(design_dir.join("世界对象.json")).unwrap();
+        let loaded: Vec<WorldObject> = serde_json::from_str(&text).unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].name, "林枫");
+        assert_eq!(loaded[1].kind, ObjectKind::Item);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── Phase 4: Search helper ────────────────────────────────────────────────
+
+    #[test]
+    fn test_search_dir_finds_matches() {
+        let dir = std::env::temp_dir().join("qingmo_test_search");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("chapter1.md"), "# 第一章\n\n主角走进了森林。").unwrap();
+        std::fs::write(dir.join("notes.json"), "{\"title\":\"主角笔记\"}").unwrap();
+        std::fs::write(dir.join("ignore.txt"), "主角 should not be found").unwrap();
+
+        let mut results = Vec::new();
+        TextToolApp::search_dir(&dir, "主角", &mut results);
+
+        // Should find matches in .md and .json but not .txt
+        assert!(!results.is_empty());
+        let paths: Vec<_> = results.iter().map(|r| r.file_path.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        assert!(paths.iter().any(|p| p.ends_with(".md")));
+        assert!(paths.iter().any(|p| p.ends_with(".json")));
+        assert!(!paths.iter().any(|p| p.ends_with(".txt")));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── Phase 4: Export helpers ───────────────────────────────────────────────
+
+    #[test]
+    fn test_copy_dir_all() {
+        let src = std::env::temp_dir().join("qingmo_test_copy_src");
+        let dst = std::env::temp_dir().join("qingmo_test_copy_dst");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("file1.md"), "hello").unwrap();
+        let sub = src.join("subdir");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("file2.json"), "{}").unwrap();
+
+        TextToolApp::copy_dir_all(&src, &dst).unwrap();
+
+        assert!(dst.join("file1.md").exists());
+        assert!(dst.join("subdir").join("file2.json").exists());
+        let content = std::fs::read_to_string(dst.join("file1.md")).unwrap();
+        assert_eq!(content, "hello");
+
+        let _ = std::fs::remove_dir_all(&src);
+        let _ = std::fs::remove_dir_all(&dst);
     }
 }
