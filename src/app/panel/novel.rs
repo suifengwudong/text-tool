@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use egui::{Context, RichText, Color32};
-use super::super::{TextToolApp, FileNode, rfd_pick_folder};
+use super::super::{TextToolApp, FileNode, StructNode, FileTreeMode, rfd_pick_folder};
 use super::markdown::render_markdown;
 
 impl TextToolApp {
@@ -13,49 +13,153 @@ impl TextToolApp {
 
         egui::SidePanel::left("file_tree")
             .resizable(true)
-            .default_width(200.0)
-            .min_width(120.0)
+            .default_width(210.0)
+            .min_width(130.0)
             .show(ctx, |ui| {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    ui.heading("项目");
-                    if self.project_root.is_none() {
-                        if ui.small_button("📂 打开").clicked() {
-                            if let Some(path) = rfd_pick_folder() {
-                                self.open_project(path);
-                            }
+                    ui.heading("导航");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // Mode toggle: Files ↔ Chapter tree
+                        let is_chapters = self.file_tree_mode == FileTreeMode::Chapters;
+                        if ui.selectable_label(is_chapters, "📖 章节")
+                            .on_hover_text("章节树视图（按结构导航）").clicked()
+                        {
+                            self.file_tree_mode = FileTreeMode::Chapters;
                         }
-                    } else if ui.small_button("🔄").on_hover_text("刷新").clicked() {
-                        self.refresh_tree();
-                    }
+                        if ui.selectable_label(!is_chapters, "📁 文件")
+                            .on_hover_text("文件系统视图").clicked()
+                        {
+                            self.file_tree_mode = FileTreeMode::Files;
+                        }
+                    });
                 });
                 ui.separator();
 
                 if self.project_root.is_none() {
-                    ui.label(RichText::new("尚未打开项目").color(Color32::GRAY));
-                    return;
-                }
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(8.0);
+                        ui.label(RichText::new("尚未打开项目").color(Color32::GRAY));
+                        ui.add_space(4.0);
+                        if ui.button("📂 打开项目").clicked() {
+                            if let Some(path) = rfd_pick_folder() {
+                                // will be applied after the panel closes
+                                open_left = Some(path.clone()); // reuse as signal
+                                let _ = path; // handled below via special case
+                            }
+                        }
+                    });
+                } else {
+                    // Refresh / new-file row
+                    ui.horizontal(|ui| {
+                        if ui.small_button("🔄").on_hover_text("刷新文件树").clicked() {
+                            self.refresh_tree();
+                        }
+                        if self.file_tree_mode == FileTreeMode::Files {
+                            if let Some(root) = self.project_root.clone() {
+                                if ui.small_button("➕").on_hover_text("新建文件").clicked() {
+                                    new_in = Some(root.join("Content"));
+                                }
+                            }
+                        }
+                    });
+                    ui.separator();
 
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    let nodes = self.file_tree.clone();
-                    for node in &nodes {
-                        Self::draw_tree_node(
-                            ui, node, 0,
-                            &mut open_left, &mut open_right, &mut new_in,
-                        );
-                    }
-                });
+                    egui::ScrollArea::vertical().id_salt("file_tree_scroll").show(ui, |ui| {
+                        if self.file_tree_mode == FileTreeMode::Files {
+                            let nodes = self.file_tree.clone();
+                            for node in &nodes {
+                                Self::draw_tree_node(
+                                    ui, node, 0,
+                                    &mut open_left, &mut open_right, &mut new_in,
+                                );
+                            }
+                        } else {
+                            // ── Chapter tree view ─────────────────────────────
+                            if self.struct_roots.is_empty() {
+                                ui.label(
+                                    RichText::new("章节结构为空\n请先在「章节结构」面板\n添加章节，或点击\n「文件夹同步结构」")
+                                        .small()
+                                        .color(Color32::GRAY),
+                                );
+                            } else {
+                                let roots = self.struct_roots.clone();
+                                Self::draw_chapter_tree(
+                                    ui, &roots, 0,
+                                    &mut open_left,
+                                    &self.project_root,
+                                );
+                            }
+                        }
+                    });
+                }
             });
 
         // Apply deferred actions
         if let Some(p) = open_left {
-            self.open_file_in_pane(&p, true);
+            // Special case: if it's a directory, open as project
+            if p.is_dir() && self.project_root.is_none() {
+                self.open_project(p);
+            } else {
+                self.open_file_in_pane(&p, true);
+            }
         }
         if let Some(p) = open_right {
             self.open_file_in_pane(&p, false);
         }
         if let Some(p) = new_in {
             self.new_file(p);
+        }
+    }
+
+    /// Render the chapter structure tree. Clicking a leaf chapter opens its `.md` file.
+    pub(in crate::app) fn draw_chapter_tree(
+        ui: &mut egui::Ui,
+        nodes: &[StructNode],
+        depth: usize,
+        open_left: &mut Option<PathBuf>,
+        project_root: &Option<std::path::PathBuf>,
+    ) {
+        for node in nodes {
+            let indent = depth as f32 * 14.0;
+            let has_children = !node.children.is_empty();
+            let done_mark = if node.done { "✅ " } else { "" };
+            let label = format!("{} {}{}", node.kind.icon(), done_mark, node.title);
+
+            ui.horizontal(|ui| {
+                ui.add_space(indent);
+                if has_children {
+                    // Branch node: show as non-clickable label in muted color
+                    ui.label(
+                        RichText::new(&label)
+                            .color(Color32::from_gray(200))
+                            .strong(),
+                    );
+                } else {
+                    // Leaf node: clickable, tries to open the corresponding .md
+                    let resp = ui.selectable_label(false,
+                        RichText::new(&label).color(Color32::from_gray(230))
+                    );
+                    if resp.clicked() || resp.double_clicked() {
+                        // Look for matching .md file in Content/
+                        if let Some(root) = project_root {
+                            let needle = node.title.to_lowercase();
+                            if let Some(path) = find_md_for_title(&root.join("Content"), &needle) {
+                                *open_left = Some(path);
+                            }
+                        }
+                    }
+                    resp.on_hover_text(if node.summary.is_empty() {
+                        "单击打开对应 Markdown 文件".to_owned()
+                    } else {
+                        node.summary.clone()
+                    });
+                }
+            });
+
+            if has_children {
+                Self::draw_chapter_tree(ui, &node.children, depth + 1, open_left, project_root);
+            }
         }
     }
 
@@ -117,17 +221,33 @@ impl TextToolApp {
     }
 
     pub(in crate::app) fn draw_editors(&mut self, ctx: &Context) {
-        // Sync flag
-        let mut do_sync = false;
+        let mut do_extract_struct = false;
+        let mut do_sync_folders   = false;
 
         egui::CentralPanel::default().show(ctx, |ui| {
             // Toolbar row above editors
             ui.horizontal(|ui| {
                 ui.label(RichText::new("编辑区").strong());
                 ui.separator();
-                if ui.button("⟳ 同步大纲").on_hover_text("从左侧 Markdown 生成右侧 JSON 大纲").clicked() {
-                    do_sync = true;
+                if ui.button("提取结构")
+                    .on_hover_text("从左侧 Markdown 标题 (#/##/###) 提取章节结构到「章节结构」面板")
+                    .clicked()
+                {
+                    do_extract_struct = true;
                 }
+                if ui.button("文件夹同步结构")
+                    .on_hover_text("根据 Content/ 文件夹层级自动生成章节结构")
+                    .clicked()
+                {
+                    do_sync_folders = true;
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        RichText::new("Tab=缩进  Ctrl+B=粗体  Ctrl+I=斜体  Ctrl+Z=撤销  Ctrl+S=保存")
+                            .small()
+                            .color(Color32::from_gray(120)),
+                    );
+                });
             });
             ui.separator();
 
@@ -267,7 +387,7 @@ impl TextToolApp {
                             });
                     } else {
                         ui.centered_and_justified(|ui| {
-                            ui.label(RichText::new("双击文件树中的 .json 文件打开\n或从右键菜单选择\"在右侧打开\"")
+                            ui.label(RichText::new("双击文件树中的文件打开\n或从右键菜单选择\"在右侧打开\"")
                                 .color(Color32::GRAY));
                         });
                     }
@@ -275,8 +395,32 @@ impl TextToolApp {
             });
         });
 
-        if do_sync {
-            self.sync_outline_to_right();
+        if do_extract_struct { self.extract_structure_from_left(); }
+        if do_sync_folders   { self.sync_struct_from_folders(); }
+    }
+}
+
+// ── Chapter tree file-finding helper ─────────────────────────────────────────
+
+/// Recursively search `dir` for a `.md` file whose stem (lowercased) matches `needle`.
+fn find_md_for_title(dir: &std::path::Path, needle: &str) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    let mut sorted: Vec<_> = entries.filter_map(|e| e.ok()).collect();
+    sorted.sort_by_key(|e| e.file_name());
+    for entry in sorted {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(found) = find_md_for_title(&path, needle) {
+                return Some(found);
+            }
+        } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
+            let stem = path.file_stem()
+                .map(|n| n.to_string_lossy().to_lowercase())
+                .unwrap_or_default();
+            if stem == needle {
+                return Some(path);
+            }
         }
     }
+    None
 }

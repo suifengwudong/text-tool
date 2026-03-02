@@ -13,13 +13,20 @@ pub struct FileNode {
 }
 
 impl FileNode {
+    /// Convenience wrapper — no JSON filtering (kept for API compatibility).
+    #[allow(dead_code)]
     pub fn from_path(path: &Path) -> Option<Self> {
+        Self::from_path_filtered(path, false)
+    }
+
+    /// Build a file tree node, optionally hiding `.json` files.
+    pub fn from_path_filtered(path: &Path, hide_json: bool) -> Option<Self> {
         let name = path.file_name()?.to_string_lossy().into_owned();
         if path.is_dir() {
             let mut children: Vec<FileNode> = std::fs::read_dir(path)
                 .ok()?
                 .filter_map(|e| e.ok())
-                .filter_map(|e| FileNode::from_path(&e.path()))
+                .filter_map(|e| FileNode::from_path_filtered(&e.path(), hide_json))
                 .collect();
             children.sort_by(|a, b| {
                 b.is_dir.cmp(&a.is_dir).then(a.name.cmp(&b.name))
@@ -32,6 +39,10 @@ impl FileNode {
                 children,
             })
         } else {
+            // When hide_json is set, exclude .json files from the visible tree.
+            if hide_json && path.extension().and_then(|e| e.to_str()) == Some("json") {
+                return None;
+            }
             Some(FileNode {
                 name,
                 path: path.to_owned(),
@@ -43,7 +54,7 @@ impl FileNode {
     }
 }
 
-// ── Outline entry (used for JSON sync) ───────────────────────────────────────
+// ── Outline entry (used for Markdown heading parsing / tests) ─────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutlineEntry {
@@ -52,7 +63,9 @@ pub struct OutlineEntry {
     pub children: Vec<OutlineEntry>,
 }
 
-/// Parse Markdown headings into a flat list, then nest them.
+/// Parse Markdown headings into a nested `OutlineEntry` tree.
+/// Used by tests; kept here for potential future use.
+#[allow(dead_code)]
 pub fn parse_outline(markdown: &str) -> Vec<OutlineEntry> {
     let mut entries: Vec<(u8, String)> = vec![];
     for line in markdown.lines() {
@@ -75,6 +88,7 @@ pub fn parse_outline(markdown: &str) -> Vec<OutlineEntry> {
     nest_entries(&entries, 1)
 }
 
+#[allow(dead_code)]
 fn nest_entries(flat: &[(u8, String)], depth: u8) -> Vec<OutlineEntry> {
     let mut result = vec![];
     let mut i = 0;
@@ -141,6 +155,7 @@ impl OpenFile {
         )
     }
 
+    #[allow(dead_code)]
     pub fn is_json(&self) -> bool {
         matches!(
             self.path.extension().and_then(|e| e.to_str()),

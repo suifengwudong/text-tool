@@ -324,8 +324,8 @@ impl LlmBackend for AgentBackend {
             // Surface API-level errors (e.g. auth failure, model not found).
             if let Some(err_obj) = json.get("error") {
                 let msg = err_obj.get("message").and_then(|v| v.as_str())
-                    .unwrap_or_else(|| err_obj.as_str().unwrap_or("未知错误"));
-                return Err(format!("API 错误: {msg}"));
+                    .unwrap_or("未知错误");
+                return Err(format!("API 错误: {msg} (原始响应: {err_obj})"));
             }
 
             let message = json

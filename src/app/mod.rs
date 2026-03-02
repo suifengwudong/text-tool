@@ -89,6 +89,8 @@ pub struct TextToolApp {
     // ── View mode toggles ─────────────────────────────────────────────────────
     pub(super) obj_view_mode: ObjectViewMode,
     pub(super) struct_view_mode: StructViewMode,
+    /// Toggle between filesystem and chapter-tree in the Novel panel left sidebar.
+    pub(super) file_tree_mode: FileTreeMode,
 
     // ── LLM Assistance (Panel::Llm) ──────────────────────────────────────────
     pub(super) llm_config: LlmConfig,
@@ -179,6 +181,7 @@ impl TextToolApp {
             new_ms_name: String::new(),
             obj_view_mode: ObjectViewMode::List,
             struct_view_mode: StructViewMode::Tree,
+            file_tree_mode: FileTreeMode::Files,
             llm_config: LlmConfig {
                 model_path: String::new(),
                 api_url: "http://localhost:11434/api/generate".to_owned(),
@@ -237,12 +240,13 @@ impl TextToolApp {
     }
 
     pub(super) fn refresh_tree(&mut self) {
+        let hide_json = self.md_settings.hide_json;
         if let Some(root) = &self.project_root {
             self.file_tree = ["Content", "Design", "废稿"]
                 .iter()
                 .filter_map(|sub| {
                     let p = root.join(sub);
-                    FileNode::from_path(&p)
+                    FileNode::from_path_filtered(&p, hide_json)
                 })
                 .collect();
         }
@@ -305,33 +309,46 @@ impl TextToolApp {
         }
     }
 
-    /// Sync: generate outline JSON from the left markdown pane.
-    pub(super) fn sync_outline_to_right(&mut self) {
-        let outline = if let Some(lf) = &self.left_file {
-            if lf.is_markdown() {
-                Some(parse_outline(&lf.content))
-            } else {
-                None
-            }
+    /// Extract Markdown headings from the current left-pane file and populate
+    /// `struct_roots` with a hierarchical `StructNode` tree.
+    ///
+    /// Mapping:
+    ///   `#`  → `StructKind::Outline` (root)
+    ///   `##` → `StructKind::Volume`
+    ///   `###` → `StructKind::Chapter`
+    ///   `####` and deeper → `StructKind::Section`
+    pub(super) fn extract_structure_from_left(&mut self) {
+        let content = if let Some(lf) = &self.left_file {
+            if lf.is_markdown() { Some(lf.content.clone()) } else { None }
         } else {
             None
         };
-
-        if let Some(entries) = outline {
-            let json = serde_json::to_string_pretty(&entries)
-                .unwrap_or_else(|_| "[]".to_owned());
-            if let Some(rf) = &mut self.right_file {
-                if rf.is_json() {
-                    rf.content = json;
-                    rf.modified = true;
-                    self.status = "已从 Markdown 同步大纲到 JSON".to_owned();
-                    return;
-                }
-            }
-            self.status = "请先在右侧打开一个 JSON 文件".to_owned();
-        } else {
+        let Some(content) = content else {
             self.status = "请先在左侧打开一个 Markdown 文件".to_owned();
-        }
+            return;
+        };
+
+        let nodes = extract_struct_nodes_from_markdown(&content);
+        let count = count_nodes(&nodes);
+        self.struct_roots = nodes;
+        self.selected_node_path.clear();
+        self.status = format!("已从 Markdown 提取 {count} 个结构节点");
+    }
+
+    /// Build a chapter structure from the project's Content folder hierarchy.
+    ///
+    /// Subdirectories become `Volume` nodes; `.md` files become `Chapter` nodes.
+    pub(super) fn sync_struct_from_folders(&mut self) {
+        let Some(root) = self.project_root.clone() else {
+            self.status = "请先打开一个项目".to_owned();
+            return;
+        };
+        let content_dir = root.join("Content");
+        let nodes = build_struct_from_dir(&content_dir);
+        let count = count_nodes(&nodes);
+        self.struct_roots = nodes;
+        self.selected_node_path.clear();
+        self.status = format!("已从文件夹结构提取 {count} 个章节节点");
     }
 
     /// Write `content` to `<project_root>/<subdir>/<filename>`.
@@ -769,6 +786,96 @@ impl TextToolApp {
     }
 }
 
+// ── Markdown → StructNode extraction ─────────────────────────────────────────
+
+/// Parse ATX headings from Markdown text into a `StructNode` tree.
+///
+/// Level mapping:
+///   `#` → Outline,  `##` → Volume,  `###` → Chapter,  `####`+ → Section
+fn extract_struct_nodes_from_markdown(content: &str) -> Vec<StructNode> {
+    // Build a flat list of (level, title).
+    let mut flat: Vec<(usize, String)> = Vec::new();
+    for line in content.lines() {
+        // Count leading '#' characters (correct for multi-byte UTF-8).
+        let level = line.chars().take_while(|&c| c == '#').count();
+        if level == 0 || level > 6 {
+            continue;
+        }
+        let rest = &line[level..]; // safe: '#' is ASCII (1 byte each)
+        // Require at least one space after the '#' run (standard ATX heading).
+        if !rest.starts_with(' ') && !rest.is_empty() {
+            continue;
+        }
+        let title = rest.trim().to_owned();
+        if !title.is_empty() {
+            flat.push((level, title));
+        }
+    }
+    if flat.is_empty() { return vec![]; }
+    nest_struct_nodes(&flat, 0, flat[0].0)
+}
+
+/// Recursively nest the flat (level, title) list into `StructNode`s.
+fn nest_struct_nodes(flat: &[(usize, String)], start: usize, min_level: usize) -> Vec<StructNode> {
+    use StructKind::{Outline, Volume, Chapter, Section};
+    let mut result = Vec::new();
+    let mut i = start;
+    while i < flat.len() {
+        let (lvl, title) = &flat[i];
+        if *lvl < min_level { break; }
+        if *lvl == min_level {
+            let kind = match lvl {
+                1 => Outline,
+                2 => Volume,
+                3 => Chapter,
+                _ => Section,
+            };
+            let mut node = StructNode::new(title, kind);
+            // Collect children (entries at a deeper level).
+            let mut j = i + 1;
+            while j < flat.len() && flat[j].0 > *lvl { j += 1; }
+            node.children = nest_struct_nodes(flat, i + 1, *lvl + 1);
+            result.push(node);
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    result
+}
+
+/// Build a StructNode tree from a directory: subdirs → Volume, .md files → Chapter.
+fn build_struct_from_dir(dir: &Path) -> Vec<StructNode> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return vec![] };
+    let mut nodes = Vec::new();
+    let mut sorted: Vec<_> = entries.filter_map(|e| e.ok()).collect();
+    sorted.sort_by_key(|e| e.file_name());
+    for entry in sorted {
+        let path = entry.path();
+        let name = path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if path.is_dir() {
+            let mut vol = StructNode::new(&name, StructKind::Volume);
+            vol.children = build_struct_from_dir(&path);
+            nodes.push(vol);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
+            let stem = path.file_stem()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or(name);
+            nodes.push(StructNode::new(&stem, StructKind::Chapter));
+        }
+    }
+    nodes
+}
+
+/// Count the total number of nodes in a tree (depth-first).
+fn count_nodes(roots: &[StructNode]) -> usize {
+    roots.iter().map(|n| 1 + count_nodes(&n.children)).sum()
+}
+
+/// Recursively search `dir` for the first `.md` whose file-stem (lowercased)
+/// matches `needle`.
 // ── eframe::App impl ──────────────────────────────────────────────────────────
 
 impl eframe::App for TextToolApp {
@@ -1050,6 +1157,7 @@ mod tests {
         let s = MarkdownSettings {
             preview_font_size: 18.0,
             default_to_preview: true,
+            ..MarkdownSettings::default()
         };
         assert_eq!(s.preview_font_size, 18.0);
         assert!(s.default_to_preview);
@@ -1172,7 +1280,11 @@ mod tests {
 
     #[test]
     fn test_markdown_settings_serialization() {
-        let s = MarkdownSettings { preview_font_size: 18.0, default_to_preview: true };
+        let s = MarkdownSettings {
+            preview_font_size: 18.0,
+            default_to_preview: true,
+            ..MarkdownSettings::default()
+        };
         let json = serde_json::to_string(&s).unwrap();
         let d: MarkdownSettings = serde_json::from_str(&json).unwrap();
         assert!((d.preview_font_size - 18.0).abs() < 1e-5);
@@ -1190,7 +1302,11 @@ mod tests {
                 use_local: true,
                 system_prompt: String::new(),
             },
-            md_settings: MarkdownSettings { preview_font_size: 16.0, default_to_preview: true },
+            md_settings: MarkdownSettings {
+                preview_font_size: 16.0,
+                default_to_preview: true,
+                ..MarkdownSettings::default()
+            },
             last_project: Some("/home/user/my_novel".to_owned()),
             auto_load: true,
         };
@@ -1307,5 +1423,71 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&src);
         let _ = std::fs::remove_dir_all(&dst);
+    }
+
+    // ── New requirement: Markdown → StructNode extraction ────────────────────
+
+    #[test]
+    fn test_extract_struct_nodes_h1_h2_h3() {
+        let md = "# 总纲\n## 第一卷\n### 第一章\n### 第二章\n## 第二卷\n";
+        let nodes = extract_struct_nodes_from_markdown(md);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].title, "总纲");
+        assert_eq!(nodes[0].kind, StructKind::Outline);
+        assert_eq!(nodes[0].children.len(), 2);
+        assert_eq!(nodes[0].children[0].title, "第一卷");
+        assert_eq!(nodes[0].children[0].children.len(), 2);
+        assert_eq!(nodes[0].children[0].children[0].title, "第一章");
+    }
+
+    #[test]
+    fn test_extract_struct_nodes_empty() {
+        let nodes = extract_struct_nodes_from_markdown("no headings here");
+        assert!(nodes.is_empty());
+    }
+
+    #[test]
+    fn test_extract_struct_nodes_flat_chapters() {
+        let md = "### 序章\n### 第一章\n### 第二章\n";
+        let nodes = extract_struct_nodes_from_markdown(md);
+        assert_eq!(nodes.len(), 3);
+        assert!(nodes.iter().all(|n| n.kind == StructKind::Chapter));
+    }
+
+    #[test]
+    fn test_markdown_settings_new_fields_defaults() {
+        let s = MarkdownSettings::default();
+        assert!(s.hide_json);
+        assert_eq!(s.tab_size, 2);
+        assert!(!s.auto_extract_structure);
+    }
+
+    #[test]
+    fn test_markdown_settings_hide_json_roundtrip() {
+        // Old JSON without new fields should deserialize with defaults.
+        let old_json = r#"{"preview_font_size":14.0,"default_to_preview":false}"#;
+        let s: MarkdownSettings = serde_json::from_str(old_json).unwrap();
+        assert!(s.hide_json);        // should default to true
+        assert_eq!(s.tab_size, 2);   // should default to 2
+    }
+
+    #[test]
+    fn test_file_node_from_path_filtered_hides_json() {
+        let dir = std::env::temp_dir().join("qingmo_test_filetree");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("chapter1.md"), "hello").unwrap();
+        std::fs::write(dir.join("data.json"), "{}").unwrap();
+
+        let node_show = FileNode::from_path_filtered(&dir, false).unwrap();
+        let node_hide = FileNode::from_path_filtered(&dir, true).unwrap();
+
+        let show_names: Vec<_> = node_show.children.iter().map(|n| &n.name).collect();
+        let hide_names: Vec<_> = node_hide.children.iter().map(|n| &n.name).collect();
+
+        assert!(show_names.iter().any(|n| n.as_str() == "data.json"));
+        assert!(!hide_names.iter().any(|n| n.as_str() == "data.json"));
+        assert!(hide_names.iter().any(|n| n.as_str() == "chapter1.md"));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
