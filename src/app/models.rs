@@ -388,7 +388,7 @@ impl Foreshadow {
 
 // ── LLM config ────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmConfig {
     pub model_path: String,
     pub api_url: String,
@@ -401,7 +401,7 @@ pub struct LlmConfig {
 
 // ── Markdown rendering settings ───────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarkdownSettings {
     /// Base font size used when rendering the preview.
     pub preview_font_size: f32,
@@ -416,6 +416,26 @@ impl Default for MarkdownSettings {
             default_to_preview: false,
         }
     }
+}
+
+// ── App configuration (persisted to disk) ─────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppConfig {
+    pub llm_config: LlmConfig,
+    pub md_settings: MarkdownSettings,
+    pub last_project: Option<String>,
+    /// Whether to automatically load JSON/MD data files when opening a project.
+    pub auto_load: bool,
+}
+
+// ── Full-text search result ────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct SearchResult {
+    pub file_path: std::path::PathBuf,
+    pub line_no: usize,
+    pub line: String,
 }
 
 // ── View mode toggles ─────────────────────────────────────────────────────────

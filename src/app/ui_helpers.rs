@@ -33,6 +33,15 @@ impl TextToolApp {
                         ui.close_menu();
                     }
                     ui.separator();
+                    if ui.button("导出章节合集…").clicked() {
+                        self.export_chapters_merged();
+                        ui.close_menu();
+                    }
+                    if ui.button("备份项目到文件夹…").clicked() {
+                        self.backup_project();
+                        ui.close_menu();
+                    }
+                    ui.separator();
                     if ui.button("导出左侧文件…").clicked() {
                         self.export_left();
                         ui.close_menu();
@@ -74,6 +83,23 @@ impl TextToolApp {
                     }
                     if ui.button("同步里程碑到 JSON").clicked() {
                         self.sync_milestones_to_json();
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("从 JSON 加载世界对象").clicked() {
+                        self.load_world_objects_from_json();
+                        ui.close_menu();
+                    }
+                    if ui.button("从 JSON 加载章节结构").clicked() {
+                        self.load_struct_from_json();
+                        ui.close_menu();
+                    }
+                    if ui.button("从 MD 加载伏笔").clicked() {
+                        self.load_foreshadows_from_md();
+                        ui.close_menu();
+                    }
+                    if ui.button("从 JSON 加载里程碑").clicked() {
+                        self.load_milestones_from_json();
                         ui.close_menu();
                     }
                 });
@@ -178,17 +204,16 @@ impl TextToolApp {
             let ctrl = i.modifiers.ctrl || i.modifiers.command;
             let shift = i.modifiers.shift;
             (
-                ctrl && !shift && i.key_pressed(Key::S),   // Ctrl+S
-                ctrl && shift && i.key_pressed(Key::S),    // Ctrl+Shift+S
-                ctrl && !shift && i.key_pressed(Key::Z),   // Ctrl+Z
+                ctrl && !shift && i.key_pressed(Key::S),           // Ctrl+S
+                ctrl && shift && i.key_pressed(Key::S),            // Ctrl+Shift+S
+                ctrl && !shift && i.key_pressed(Key::Z),           // Ctrl+Z
+                ctrl && shift && i.key_pressed(Key::F),            // Ctrl+Shift+F
+                ctrl && !shift && i.key_pressed(Key::B),           // Ctrl+B
+                ctrl && !shift && i.key_pressed(Key::I),           // Ctrl+I
             )
         });
-        if input.0 {
-            self.save_left();
-        }
-        if input.1 {
-            self.save_right();
-        }
+        if input.0 { self.save_left(); }
+        if input.1 { self.save_right(); }
         if input.2 {
             // Undo: apply to the last focused pane first
             if self.last_focused_left {
@@ -204,6 +229,42 @@ impl TextToolApp {
                     f.content = prev;
                     f.modified = true;
                     self.status = "撤销 (右侧)".to_owned();
+                }
+            }
+        }
+        if input.3 {
+            self.show_search = !self.show_search;
+        }
+        // Ctrl+B / Ctrl+I: bold / italic insertion in the left editor
+        if (input.4 || input.5) && self.last_focused_left {
+            let marker = if input.4 { "**" } else { "*" };
+            let te_id = egui::Id::new("left_editor_main");
+            if let Some(mut state) = egui::text_edit::TextEditState::load(ctx, te_id) {
+                if let Some(range) = state.cursor.char_range() {
+                    let from = range.primary.index.min(range.secondary.index);
+                    let to   = range.primary.index.max(range.secondary.index);
+                    if let Some(f) = &mut self.left_file {
+                        let chars: Vec<char> = f.content.chars().collect();
+                        let selected: String = chars[from..to].iter().collect();
+                        let replacement = if from == to {
+                            let tmpl = if input.4 { "**粗体**" } else { "*斜体*" };
+                            tmpl.to_owned()
+                        } else {
+                            format!("{}{}{}", marker, selected, marker)
+                        };
+                        let new_end = from + replacement.chars().count();
+                        let mut new_content = String::new();
+                        new_content.extend(chars[..from].iter());
+                        new_content.push_str(&replacement);
+                        new_content.extend(chars[to..].iter());
+                        f.content = new_content;
+                        f.modified = true;
+                        // Move cursor to end of inserted text
+                        let new_cursor = egui::text::CCursorRange::one(
+                            egui::text::CCursor::new(new_end));
+                        state.cursor.set_char_range(Some(new_cursor));
+                        egui::text_edit::TextEditState::store(state, ctx, te_id);
+                    }
                 }
             }
         }
@@ -260,6 +321,15 @@ impl TextToolApp {
                     "打开 Markdown 文件时默认切换到预览模式",
                 );
 
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(4.0);
+
+                ui.checkbox(
+                    &mut self.auto_load_from_files,
+                    "打开项目时自动从文件反向同步数据",
+                );
+
                 ui.add_space(8.0);
                 ui.separator();
                 ui.add_space(4.0);
@@ -271,11 +341,70 @@ impl TextToolApp {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button("关闭").clicked() {
                             self.show_settings_window = false;
+                            self.save_config();
                         }
                     });
                 });
             });
 
         self.show_settings_window = open;
+    }
+
+    /// Draw the floating full-text search window (Ctrl+Shift+F).
+    pub(super) fn draw_search_window(&mut self, ctx: &Context) {
+        if !self.show_search { return; }
+
+        let mut open = self.show_search;
+        let mut run_search = false;
+        let mut open_file: Option<std::path::PathBuf> = None;
+
+        egui::Window::new("🔍 全文搜索")
+            .open(&mut open)
+            .resizable(true)
+            .default_size([500.0, 360.0])
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("搜索:");
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.search_query)
+                            .desired_width(300.0)
+                            .hint_text("输入关键词…"),
+                    );
+                    if resp.lost_focus() && ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        run_search = true;
+                    }
+                    if ui.button("搜索").clicked() {
+                        run_search = true;
+                    }
+                });
+                ui.separator();
+
+                let results_snapshot = self.search_results.clone();
+                if results_snapshot.is_empty() {
+                    ui.label(RichText::new("暂无结果").color(Color32::GRAY));
+                } else {
+                    ui.label(RichText::new(format!("共 {} 处匹配", results_snapshot.len())).small());
+                    egui::ScrollArea::vertical().id_salt("search_results_scroll").show(ui, |ui| {
+                        for result in &results_snapshot {
+                            let fname = result.file_path.file_name()
+                                .unwrap_or_default().to_string_lossy();
+                            let label = format!("{}:{} — {}",
+                                fname, result.line_no, result.line.trim());
+                            let resp = ui.selectable_label(false,
+                                RichText::new(&label).monospace().small())
+                                .on_hover_text(result.file_path.display().to_string());
+                            if resp.double_clicked() {
+                                open_file = Some(result.file_path.clone());
+                            }
+                        }
+                    });
+                }
+            });
+
+        self.show_search = open;
+        if run_search { self.run_search(); }
+        if let Some(path) = open_file {
+            self.open_file_in_pane(&path, true);
+        }
     }
 }

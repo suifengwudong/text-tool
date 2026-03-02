@@ -1,6 +1,11 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
+/// Returns the home directory, using $HOME env var.
+fn dirs_home() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(PathBuf::from)
+}
+
 mod models;
 mod file_manager;
 mod llm_backend;
@@ -96,6 +101,16 @@ pub struct TextToolApp {
     pub(super) left_preview_mode: bool,
     pub(super) md_settings: MarkdownSettings,
     pub(super) show_settings_window: bool,
+
+    // ── Config persistence ────────────────────────────────────────────────────
+    pub(super) last_project: Option<PathBuf>,
+    /// Auto-load world objects / struct / foreshadows / milestones from files when opening project.
+    pub(super) auto_load_from_files: bool,
+
+    // ── Full-text search ──────────────────────────────────────────────────────
+    pub(super) show_search: bool,
+    pub(super) search_query: String,
+    pub(super) search_results: Vec<SearchResult>,
 }
 
 #[derive(Debug)]
@@ -116,7 +131,7 @@ impl TextToolApp {
         fonts.families.get_mut(&egui::FontFamily::Monospace).unwrap().insert(0, "chinese".to_owned());
         cc.egui_ctx.set_fonts(fonts);
 
-        TextToolApp {
+        let mut app = TextToolApp {
             active_panel: Panel::Novel,
             project_root: None,
             file_tree: vec![],
@@ -176,7 +191,28 @@ impl TextToolApp {
             left_preview_mode: false,
             md_settings: MarkdownSettings::default(),
             show_settings_window: false,
+            last_project: None,
+            auto_load_from_files: false,
+            show_search: false,
+            search_query: String::new(),
+            search_results: vec![],
+        };
+
+        // Apply saved configuration (LLM settings, MD settings, last project).
+        if let Some(cfg) = Self::load_config() {
+            app.llm_config = cfg.llm_config;
+            app.md_settings = cfg.md_settings;
+            app.auto_load_from_files = cfg.auto_load;
+            if let Some(p) = cfg.last_project {
+                let pb = PathBuf::from(p);
+                if pb.is_dir() {
+                    app.last_project = Some(pb.clone());
+                    app.open_project(pb);
+                }
+            }
         }
+
+        app
     }
 
     // ── Project operations ────────────────────────────────────────────────────
@@ -187,8 +223,13 @@ impl TextToolApp {
             let _ = std::fs::create_dir_all(path.join(sub));
         }
         self.project_root = Some(path.clone());
+        self.last_project = Some(path.clone());
         self.refresh_tree();
         self.status = format!("已打开项目: {}", path.display());
+        self.save_config();
+        if self.auto_load_from_files {
+            self.load_all_from_files();
+        }
     }
 
     pub(super) fn refresh_tree(&mut self) {
@@ -478,6 +519,239 @@ impl TextToolApp {
     pub(super) fn all_struct_node_titles(&self) -> Vec<String> {
         all_node_titles(&self.struct_roots)
     }
+
+    // ── Config persistence ────────────────────────────────────────────────────
+
+    /// Returns the path to `~/.config/qingmo/config.json`.
+    fn config_path() -> Option<PathBuf> {
+        dirs_home().map(|h| h.join(".config").join("qingmo").join("config.json"))
+    }
+
+    /// Save LLM config, Markdown settings, and last project to disk.
+    pub(super) fn save_config(&self) {
+        let Some(path) = Self::config_path() else { return };
+        let cfg = AppConfig {
+            llm_config: self.llm_config.clone(),
+            md_settings: self.md_settings.clone(),
+            last_project: self.last_project.as_ref().map(|p| p.to_string_lossy().into_owned()),
+            auto_load: self.auto_load_from_files,
+        };
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(json) = serde_json::to_string_pretty(&cfg) {
+            let _ = std::fs::write(&path, json);
+        }
+    }
+
+    /// Load saved configuration from `~/.config/qingmo/config.json`.
+    pub(super) fn load_config() -> Option<AppConfig> {
+        let path = Self::config_path()?;
+        let text = std::fs::read_to_string(&path).ok()?;
+        serde_json::from_str(&text).ok()
+    }
+
+    // ── Reverse sync (file → app state) ──────────────────────────────────────
+
+    /// Load world objects from `Design/世界对象.json` into `self.world_objects`.
+    pub(super) fn load_world_objects_from_json(&mut self) {
+        let Some(root) = self.project_root.as_ref() else {
+            self.status = "请先打开一个项目".to_owned(); return;
+        };
+        let path = root.join("Design").join("世界对象.json");
+        match std::fs::read_to_string(&path) {
+            Ok(text) => match serde_json::from_str::<Vec<WorldObject>>(&text) {
+                Ok(objs) => {
+                    self.world_objects = objs;
+                    self.selected_obj_idx = None;
+                    self.status = format!("已从 {} 加载世界对象", path.display());
+                }
+                Err(e) => self.status = format!("解析失败: {e}"),
+            },
+            Err(e) => self.status = format!("读取失败: {e}"),
+        }
+    }
+
+    /// Load chapter structure from `Design/章节结构.json` into `self.struct_roots`.
+    pub(super) fn load_struct_from_json(&mut self) {
+        let Some(root) = self.project_root.as_ref() else {
+            self.status = "请先打开一个项目".to_owned(); return;
+        };
+        let path = root.join("Design").join("章节结构.json");
+        match std::fs::read_to_string(&path) {
+            Ok(text) => match serde_json::from_str::<Vec<StructNode>>(&text) {
+                Ok(nodes) => {
+                    self.struct_roots = nodes;
+                    self.selected_node_path.clear();
+                    self.status = format!("已从 {} 加载章节结构", path.display());
+                }
+                Err(e) => self.status = format!("解析失败: {e}"),
+            },
+            Err(e) => self.status = format!("读取失败: {e}"),
+        }
+    }
+
+    /// Load milestones from `Design/里程碑.json` into `self.milestones`.
+    pub(super) fn load_milestones_from_json(&mut self) {
+        let Some(root) = self.project_root.as_ref() else {
+            self.status = "请先打开一个项目".to_owned(); return;
+        };
+        let path = root.join("Design").join("里程碑.json");
+        match std::fs::read_to_string(&path) {
+            Ok(text) => match serde_json::from_str::<Vec<Milestone>>(&text) {
+                Ok(ms) => {
+                    self.milestones = ms;
+                    self.selected_ms_idx = None;
+                    self.status = format!("已从 {} 加载里程碑", path.display());
+                }
+                Err(e) => self.status = format!("解析失败: {e}"),
+            },
+            Err(e) => self.status = format!("读取失败: {e}"),
+        }
+    }
+
+    /// Parse `Content/伏笔.md` → `self.foreshadows`.
+    /// Headings (`## name`) become foreshadow entries; `✅` in the heading marks them resolved.
+    pub(super) fn load_foreshadows_from_md(&mut self) {
+        let Some(root) = self.project_root.as_ref() else {
+            self.status = "请先打开一个项目".to_owned(); return;
+        };
+        let path = root.join("Content").join("伏笔.md");
+        match std::fs::read_to_string(&path) {
+            Ok(text) => {
+                let mut foreshadows = Vec::new();
+                for line in text.lines() {
+                    if let Some(rest) = line.strip_prefix("## ") {
+                        let resolved = rest.contains('✅');
+                        let name = rest.replace("✅", "").replace("已解决", "")
+                            .replace("⏳", "").replace("未解决", "").trim().to_owned();
+                        if !name.is_empty() {
+                            let mut fs = Foreshadow::new(&name);
+                            fs.resolved = resolved;
+                            foreshadows.push(fs);
+                        }
+                    }
+                }
+                self.foreshadows = foreshadows;
+                self.selected_fs_idx = None;
+                self.status = format!("已从 {} 加载伏笔", path.display());
+            }
+            Err(e) => self.status = format!("读取失败: {e}"),
+        }
+    }
+
+    /// Run all four reverse-sync loads.
+    pub(super) fn load_all_from_files(&mut self) {
+        self.load_world_objects_from_json();
+        self.load_struct_from_json();
+        self.load_milestones_from_json();
+        self.load_foreshadows_from_md();
+        self.status = "已从文件加载所有数据".to_owned();
+    }
+
+    // ── Full-text search ──────────────────────────────────────────────────────
+
+    /// Scan all `.md` and `.json` files under the project root for `self.search_query`.
+    pub(super) fn run_search(&mut self) {
+        self.search_results.clear();
+        let query = self.search_query.clone();
+        if query.is_empty() { return; }
+        let Some(root) = self.project_root.clone() else {
+            self.status = "请先打开一个项目".to_owned(); return;
+        };
+        Self::search_dir(&root, &query, &mut self.search_results);
+        self.status = format!("搜索「{}」找到 {} 处结果", query, self.search_results.len());
+    }
+
+    fn search_dir(dir: &Path, query: &str, results: &mut Vec<SearchResult>) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                Self::search_dir(&path, query, results);
+            } else {
+                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                if ext == "md" || ext == "json" {
+                    if let Ok(text) = std::fs::read_to_string(&path) {
+                        for (line_no, line) in text.lines().enumerate() {
+                            if line.contains(query) {
+                                results.push(SearchResult {
+                                    file_path: path.clone(),
+                                    line_no: line_no + 1,
+                                    line: line.to_owned(),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Export and backup ─────────────────────────────────────────────────────
+
+    /// Concatenate all `Content/*.md` files and save to a user-chosen file.
+    pub(super) fn export_chapters_merged(&mut self) {
+        let Some(root) = self.project_root.as_ref() else {
+            self.status = "请先打开一个项目".to_owned(); return;
+        };
+        let content_dir = root.join("Content");
+        let mut md_files: Vec<PathBuf> = std::fs::read_dir(&content_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("md"))
+            .collect();
+        md_files.sort();
+
+        let mut merged = String::new();
+        for path in &md_files {
+            if let Ok(text) = std::fs::read_to_string(path) {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                merged.push_str(&format!("# ── {} ──\n\n", name));
+                merged.push_str(&text);
+                merged.push_str("\n\n");
+            }
+        }
+
+        let dummy = PathBuf::from("merged.md");
+        if let Some(dest) = rfd_save_file(&dummy) {
+            match std::fs::write(&dest, &merged) {
+                Ok(_) => self.status = format!("已导出合集到 {}", dest.display()),
+                Err(e) => self.status = format!("导出失败: {e}"),
+            }
+        }
+    }
+
+    /// Copy the entire project folder to a user-selected destination directory.
+    pub(super) fn backup_project(&mut self) {
+        let Some(root) = self.project_root.clone() else {
+            self.status = "请先打开一个项目".to_owned(); return;
+        };
+        let Some(dest_parent) = rfd_pick_folder() else { return };
+        let folder_name = root.file_name().unwrap_or_default();
+        let dest = dest_parent.join(folder_name);
+        match Self::copy_dir_all(&root, &dest) {
+            Ok(_) => self.status = format!("已备份到 {}", dest.display()),
+            Err(e) => self.status = format!("备份失败: {e}"),
+        }
+    }
+
+    fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(dst)?;
+        for entry in std::fs::read_dir(src)? {
+            let entry = entry?;
+            let ty = entry.file_type()?;
+            let dst_path = dst.join(entry.file_name());
+            if ty.is_dir() {
+                Self::copy_dir_all(&entry.path(), &dst_path)?;
+            } else {
+                std::fs::copy(entry.path(), dst_path)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 // ── eframe::App impl ──────────────────────────────────────────────────────────
@@ -512,6 +786,7 @@ impl eframe::App for TextToolApp {
         // Dialogs
         self.draw_new_file_dialog(ctx);
         self.draw_settings_window(ctx);
+        self.draw_search_window(ctx);
     }
 }
 

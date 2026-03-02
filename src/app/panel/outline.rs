@@ -17,6 +17,7 @@ impl TextToolApp {
         let mut add_child: Option<(Vec<usize>, String, StructKind)> = None;
         let mut remove_node: Option<Vec<usize>> = None;
         let mut move_up: Option<Vec<usize>> = None;
+        let mut root_dnd_move: Option<(usize, usize)> = None;
 
         // ── Left: struct tree ──────────────────────────────────────────────────
         egui::SidePanel::left("struct_tree")
@@ -73,8 +74,9 @@ impl TextToolApp {
                         let roots_snapshot = self.struct_roots.clone();
                         let selected = self.selected_node_path.clone();
                         Self::draw_struct_tree(
-                            ui, &roots_snapshot, &selected, &[],
+                            ui, ctx, &roots_snapshot, &selected, &[],
                             &mut add_child, &mut remove_node, &mut move_up,
+                            &mut root_dnd_move,
                             &mut self.selected_node_path,
                         );
                     } else {
@@ -123,6 +125,22 @@ impl TextToolApp {
                     *new_path.last_mut().unwrap() -= 1;
                     if self.selected_node_path == path {
                         self.selected_node_path = new_path;
+                    }
+                }
+            }
+        }
+        if let Some((from, to)) = root_dnd_move {
+            if from < self.struct_roots.len() && to < self.struct_roots.len() {
+                let node = self.struct_roots.remove(from);
+                self.struct_roots.insert(to, node);
+                // Update selection path if it was pointing at a moved root
+                if let Some(first) = self.selected_node_path.first_mut() {
+                    if *first == from {
+                        *first = to;
+                    } else if from < to && *first > from && *first <= to {
+                        *first -= 1;
+                    } else if from > to && *first >= to && *first < from {
+                        *first += 1;
                     }
                 }
             }
@@ -370,12 +388,14 @@ impl TextToolApp {
     #[allow(clippy::too_many_arguments)]
     fn draw_struct_tree(
         ui: &mut egui::Ui,
+        ctx: &egui::Context,
         nodes: &[StructNode],
         selected: &[usize],
         path: &[usize],
         add_child: &mut Option<(Vec<usize>, String, StructKind)>,
         remove_node: &mut Option<Vec<usize>>,
         move_up: &mut Option<Vec<usize>>,
+        root_dnd_move: &mut Option<(usize, usize)>,
         selected_path: &mut Vec<usize>,
     ) {
         for (i, node) in nodes.iter().enumerate() {
@@ -384,48 +404,90 @@ impl TextToolApp {
 
             let is_selected = *selected == cur_path;
             let indent = path.len() as f32 * 14.0;
+            let is_root = path.is_empty();
 
-            ui.horizontal(|ui| {
-                ui.add_space(indent);
-                let label = format!("{} {}", node.kind.icon(), node.title);
-                let resp = ui.selectable_label(is_selected, &label);
-                if resp.clicked() {
-                    *selected_path = cur_path.clone();
+            // For top-level nodes, wrap with drag-and-drop source
+            if is_root {
+                let item_id = egui::Id::new(("struct_root_drag", i));
+                let ir = ui.dnd_drag_source(item_id, i, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.add_space(indent);
+                        let label = format!("{} {}", node.kind.icon(), node.title);
+                        let resp = ui.selectable_label(is_selected, &label);
+                        if resp.clicked() { *selected_path = cur_path.clone(); }
+                        resp.context_menu(|ui| {
+                            let child_kind = node.kind.default_child_kind();
+                            if ui.button(format!("➕ 添加子{}", child_kind.label())).clicked() {
+                                *add_child = Some((
+                                    cur_path.clone(),
+                                    format!("新{}", child_kind.label()),
+                                    child_kind,
+                                ));
+                                ui.close_menu();
+                            }
+                            if i > 0 && ui.button("↑ 上移").clicked() {
+                                *move_up = Some(cur_path.clone());
+                                ui.close_menu();
+                            }
+                            ui.separator();
+                            if ui.button("🗑 删除").clicked() {
+                                *remove_node = Some(cur_path.clone());
+                                ui.close_menu();
+                            }
+                        });
+                        let done_icon = if node.done { "✅" } else { "⏳" };
+                        ui.label(RichText::new(done_icon).small());
+                        if node.tag != ChapterTag::Normal {
+                            ui.label(RichText::new(node.tag.label())
+                                .small().color(node.tag.color()));
+                        }
+                    });
+                });
+                if let Some(payload) = ir.response.dnd_release_payload::<usize>() {
+                    let from = *payload;
+                    if from != i { *root_dnd_move = Some((from, i)); }
                 }
-                resp.context_menu(|ui| {
-                    let child_kind = node.kind.default_child_kind();
-                    if ui.button(format!("➕ 添加子{}", child_kind.label())).clicked() {
-                        *add_child = Some((
-                            cur_path.clone(),
-                            format!("新{}", child_kind.label()),
-                            child_kind,
-                        ));
-                        ui.close_menu();
+            } else {
+                ui.horizontal(|ui| {
+                    ui.add_space(indent);
+                    let label = format!("{} {}", node.kind.icon(), node.title);
+                    let resp = ui.selectable_label(is_selected, &label);
+                    if resp.clicked() {
+                        *selected_path = cur_path.clone();
                     }
-                    if i > 0 && ui.button("↑ 上移").clicked() {
-                        *move_up = Some(cur_path.clone());
-                        ui.close_menu();
-                    }
-                    ui.separator();
-                    if ui.button("🗑 删除").clicked() {
-                        *remove_node = Some(cur_path.clone());
-                        ui.close_menu();
+                    resp.context_menu(|ui| {
+                        let child_kind = node.kind.default_child_kind();
+                        if ui.button(format!("➕ 添加子{}", child_kind.label())).clicked() {
+                            *add_child = Some((
+                                cur_path.clone(),
+                                format!("新{}", child_kind.label()),
+                                child_kind,
+                            ));
+                            ui.close_menu();
+                        }
+                        if i > 0 && ui.button("↑ 上移").clicked() {
+                            *move_up = Some(cur_path.clone());
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui.button("🗑 删除").clicked() {
+                            *remove_node = Some(cur_path.clone());
+                            ui.close_menu();
+                        }
+                    });
+                    let done_icon = if node.done { "✅" } else { "⏳" };
+                    ui.label(RichText::new(done_icon).small());
+                    if node.tag != ChapterTag::Normal {
+                        ui.label(RichText::new(node.tag.label())
+                            .small().color(node.tag.color()));
                     }
                 });
-                // Done indicator
-                let done_icon = if node.done { "✅" } else { "⏳" };
-                ui.label(RichText::new(done_icon).small());
-                // Tag badge
-                if node.tag != ChapterTag::Normal {
-                    ui.label(RichText::new(node.tag.label())
-                        .small().color(node.tag.color()));
-                }
-            });
+            }
 
             if !node.children.is_empty() {
                 Self::draw_struct_tree(
-                    ui, &node.children, selected, &cur_path,
-                    add_child, remove_node, move_up, selected_path,
+                    ui, ctx, &node.children, selected, &cur_path,
+                    add_child, remove_node, move_up, root_dnd_move, selected_path,
                 );
             }
         }

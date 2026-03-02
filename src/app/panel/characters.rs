@@ -63,22 +63,45 @@ impl TextToolApp {
 
                 egui::ScrollArea::vertical().id_salt("obj_list_scroll").show(ui, |ui| {
                     if self.obj_view_mode == ObjectViewMode::List {
-                        for (i, obj) in self.world_objects.iter().enumerate() {
+                        let mut pending_move: Option<(usize, usize)> = None;
+                        for i in 0..self.world_objects.len() {
+                            let obj = &self.world_objects[i];
                             // Apply kind filter
                             if let Some(ref filter) = self.obj_kind_filter {
                                 if &obj.kind != filter { continue; }
                             }
                             let selected = self.selected_obj_idx == Some(i);
                             let label = format!("{} {}", obj.icon(), obj.name);
-                            let resp = ui.selectable_label(selected, &label);
-                            resp.context_menu(|ui| {
+                            let item_id = egui::Id::new(("wo_drag", i));
+                            let ir = ui.dnd_drag_source(item_id, i, |ui| {
+                                ui.selectable_label(selected, &label)
+                            });
+                            // Detect drop onto this item
+                            if let Some(payload) = ir.response.dnd_release_payload::<usize>() {
+                                let from = *payload;
+                                if from != i { pending_move = Some((from, i)); }
+                            }
+                            ir.response.context_menu(|ui| {
                                 if ui.button("删除").clicked() {
                                     remove_obj = Some(i);
                                     ui.close_menu();
                                 }
                             });
-                            if resp.clicked() {
-                                open_obj = Some(i);
+                            if ir.inner.clicked() { open_obj = Some(i); }
+                        }
+                        if let Some((from, to)) = pending_move {
+                            if from < self.world_objects.len() && to < self.world_objects.len() {
+                                let item = self.world_objects.remove(from);
+                                self.world_objects.insert(to, item);
+                                if let Some(sel) = self.selected_obj_idx {
+                                    if sel == from {
+                                        self.selected_obj_idx = Some(to);
+                                    } else if from < to && sel > from && sel <= to {
+                                        self.selected_obj_idx = Some(sel - 1);
+                                    } else if from > to && sel >= to && sel < from {
+                                        self.selected_obj_idx = Some(sel + 1);
+                                    }
+                                }
                             }
                         }
                     } else {

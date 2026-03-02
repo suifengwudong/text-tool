@@ -142,6 +142,17 @@ impl TextToolApp {
                 cols[0].group(|ui| {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(&left_title).strong());
+                        // Word count for markdown files
+                        if let Some(f) = &self.left_file {
+                            if f.is_markdown() {
+                                let char_count: usize = f.content.chars()
+                                    .filter(|c| !c.is_whitespace()).count();
+                                ui.label(
+                                    RichText::new(format!("文字数: {}", char_count))
+                                        .small().color(Color32::from_gray(150))
+                                );
+                            }
+                        }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.small_button("💾").on_hover_text("保存 (Ctrl+S)").clicked() {
                                 self.save_left();
@@ -184,6 +195,7 @@ impl TextToolApp {
                             .id_salt("left_editor")
                             .show(ui, |ui| {
                                 let editor = egui::TextEdit::multiline(&mut f.content)
+                                    .id(egui::Id::new("left_editor_main"))
                                     .desired_width(f32::INFINITY)
                                     .desired_rows(30)
                                     .min_size(egui::vec2(0.0, height))
