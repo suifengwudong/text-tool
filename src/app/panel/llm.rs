@@ -147,16 +147,39 @@ impl TextToolApp {
                         ui.separator();
                         ui.label(RichText::new("当前可用技能 (最多 5 轮调用):").small()
                             .color(Color32::from_gray(160)));
-                        // Snapshot skill metadata (static names — no clone of data)
+                        // Read-only skills
                         for (name, desc) in &[
                             ("list_characters",    "列出所有世界对象"),
                             ("get_character_info", "获取人物/对象详情"),
                             ("get_chapter_outline","获取章节结构大纲"),
                             ("search_foreshadows", "搜索伏笔列表"),
+                            ("get_milestone_status","获取里程碑状态"),
+                            ("list_project_files", "列出项目文件"),
+                            ("get_file_content",   "读取文件内容"),
+                            ("get_text_templates", "获取写作模板"),
                         ] {
                             ui.horizontal(|ui| {
-                                ui.label(RichText::new("⚡").small()
-                                    .color(Color32::from_rgb(100, 200, 120)));
+                                ui.label(RichText::new("🔍").small()
+                                    .color(Color32::from_rgb(100, 170, 230)));
+                                ui.label(RichText::new(*name).small().monospace())
+                                    .on_hover_text(*desc);
+                            });
+                        }
+                        // Write/mutation skills
+                        ui.add_space(2.0);
+                        ui.label(RichText::new("写入技能:").small().color(Color32::from_gray(140)));
+                        for (name, desc) in &[
+                            ("add_world_object",    "添加世界对象"),
+                            ("update_world_object", "更新世界对象"),
+                            ("delete_world_object", "删除世界对象"),
+                            ("add_chapter_node",    "添加章节节点"),
+                            ("add_foreshadow",      "添加伏笔"),
+                            ("resolve_foreshadow",  "标记伏笔已解决"),
+                            ("write_file_content",  "写入项目文件"),
+                        ] {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("✏").small()
+                                    .color(Color32::from_rgb(200, 140, 60)));
                                 ui.label(RichText::new(*name).small().monospace())
                                     .on_hover_text(*desc);
                             });

@@ -207,6 +207,14 @@ pub enum PromptTemplate {
     DialogueOptimize,
     /// Generate a character summary from a description.
     CharacterSummary,
+    /// Write a vivid scene-opening paragraph.
+    SceneOpening,
+    /// Generate a plot twist suggestion.
+    PlotTwist,
+    /// Write a chapter ending that leaves the reader wanting more.
+    ChapterEnding,
+    /// Generate a chapter outline from a brief premise.
+    ChapterOutline,
 }
 
 impl PromptTemplate {
@@ -217,6 +225,10 @@ impl PromptTemplate {
             PromptTemplate::Expansion,
             PromptTemplate::DialogueOptimize,
             PromptTemplate::CharacterSummary,
+            PromptTemplate::SceneOpening,
+            PromptTemplate::PlotTwist,
+            PromptTemplate::ChapterEnding,
+            PromptTemplate::ChapterOutline,
         ]
     }
 
@@ -227,6 +239,10 @@ impl PromptTemplate {
             PromptTemplate::Expansion        => "扩写场景",
             PromptTemplate::DialogueOptimize => "优化对话",
             PromptTemplate::CharacterSummary => "生成人物简介",
+            PromptTemplate::SceneOpening     => "场景开头",
+            PromptTemplate::PlotTwist        => "情节转折",
+            PromptTemplate::ChapterEnding    => "章节结尾",
+            PromptTemplate::ChapterOutline   => "生成章节大纲",
         }
     }
 
@@ -253,6 +269,18 @@ impl PromptTemplate {
             ),
             PromptTemplate::CharacterSummary => format!(
                 "{ctx_block}请根据以下人物信息，生成一段简洁的人物简介（100字以内）：\n\n{input}\n\n简介："
+            ),
+            PromptTemplate::SceneOpening => format!(
+                "{ctx_block}请为以下场景写一段引人入胜的开场描写，渲染氛围，吸引读者：\n\n{input}\n\n开场描写："
+            ),
+            PromptTemplate::PlotTwist => format!(
+                "{ctx_block}请根据以下情节，提出一个出人意料却合乎逻辑的情节转折点建议：\n\n{input}\n\n转折建议："
+            ),
+            PromptTemplate::ChapterEnding => format!(
+                "{ctx_block}请为以下章节内容写一个令人意犹未尽、想要继续阅读的结尾：\n\n{input}\n\n章节结尾："
+            ),
+            PromptTemplate::ChapterOutline => format!(
+                "{ctx_block}请根据以下故事主线，生成详细的章节大纲，每章包含主要情节点：\n\n{input}\n\n章节大纲："
             ),
         }
     }
@@ -394,7 +422,45 @@ mod tests {
 
     #[test]
     fn test_prompt_template_all() {
-        assert_eq!(PromptTemplate::all().len(), 4);
+        assert_eq!(PromptTemplate::all().len(), 8);
+        // Verify new templates are present
+        let labels: Vec<&str> = PromptTemplate::all().iter().map(|t| t.label()).collect();
+        assert!(labels.contains(&"续写正文"));
+        assert!(labels.contains(&"扩写场景"));
+        assert!(labels.contains(&"优化对话"));
+        assert!(labels.contains(&"生成人物简介"));
+        assert!(labels.contains(&"场景开头"));
+        assert!(labels.contains(&"情节转折"));
+        assert!(labels.contains(&"章节结尾"));
+        assert!(labels.contains(&"生成章节大纲"));
+    }
+
+    #[test]
+    fn test_prompt_template_scene_opening() {
+        let prompt = PromptTemplate::SceneOpening.fill("", "城堡大门缓缓敞开。");
+        assert!(prompt.contains("开场"));
+        assert!(prompt.contains("城堡大门缓缓敞开。"));
+    }
+
+    #[test]
+    fn test_prompt_template_plot_twist() {
+        let prompt = PromptTemplate::PlotTwist.fill("", "主角以为侦探是朋友。");
+        assert!(prompt.contains("转折"));
+        assert!(prompt.contains("主角以为侦探是朋友。"));
+    }
+
+    #[test]
+    fn test_prompt_template_chapter_ending() {
+        let prompt = PromptTemplate::ChapterEnding.fill("", "最后一场战斗结束了。");
+        assert!(prompt.contains("结尾"));
+        assert!(prompt.contains("最后一场战斗结束了。"));
+    }
+
+    #[test]
+    fn test_prompt_template_chapter_outline() {
+        let prompt = PromptTemplate::ChapterOutline.fill("", "一个少年踏上旅途。");
+        assert!(prompt.contains("大纲"));
+        assert!(prompt.contains("一个少年踏上旅途。"));
     }
 }
 

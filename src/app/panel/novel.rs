@@ -21,20 +21,33 @@ impl TextToolApp {
             .min_width(130.0)
             .show(ctx, |ui| {
                 ui.add_space(4.0);
+                // When the Files tab is hidden (default), force Chapter-tree mode.
+                if !self.md_settings.show_files_tab {
+                    self.file_tree_mode = FileTreeMode::Chapters;
+                }
                 ui.horizontal(|ui| {
                     ui.heading("导航");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // Mode toggle: Files ↔ Chapter tree
+                        // Only show the Files toggle when the setting is enabled.
                         let is_chapters = self.file_tree_mode == FileTreeMode::Chapters;
-                        if ui.selectable_label(is_chapters, "📖 章节")
-                            .on_hover_text("章节树视图（按结构导航）").clicked()
-                        {
-                            self.file_tree_mode = FileTreeMode::Chapters;
-                        }
-                        if ui.selectable_label(!is_chapters, "📁 文件")
-                            .on_hover_text("文件系统视图").clicked()
-                        {
-                            self.file_tree_mode = FileTreeMode::Files;
+                        if self.md_settings.show_files_tab {
+                            if ui.selectable_label(is_chapters, "📖 章节")
+                                .on_hover_text("章节树视图（按结构导航）").clicked()
+                            {
+                                self.file_tree_mode = FileTreeMode::Chapters;
+                            }
+                            if ui.selectable_label(!is_chapters, "📁 文件")
+                                .on_hover_text("文件系统视图").clicked()
+                            {
+                                self.file_tree_mode = FileTreeMode::Files;
+                            }
+                        } else {
+                            // Files tab disabled — show a static label only.
+                            ui.label(
+                                egui::RichText::new("📖 章节")
+                                    .color(Color32::from_rgb(100, 200, 120)),
+                            );
                         }
                     });
                 });

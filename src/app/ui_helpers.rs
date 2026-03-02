@@ -605,6 +605,14 @@ impl TextToolApp {
                     self.refresh_tree();
                     self.save_config();
                 }
+                let prev_files_tab = self.md_settings.show_files_tab;
+                ui.checkbox(
+                    &mut self.md_settings.show_files_tab,
+                    "在导航中显示「文件」标签页（默认关闭，使用章节树导航）",
+                );
+                if self.md_settings.show_files_tab != prev_files_tab {
+                    self.save_config();
+                }
 
                 ui.add_space(6.0);
                 ui.separator();

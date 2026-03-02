@@ -2,7 +2,8 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use super::llm_backend::LlmBackend;
-use super::{LlmConfig, WorldObject, StructNode, Foreshadow, Milestone};
+use super::{LlmConfig, WorldObject, StructNode, Foreshadow, Milestone, ObjectKind,
+            StructKind, ChapterTag};
 
 // ── Skill trait ───────────────────────────────────────────────────────────────
 
@@ -314,6 +315,530 @@ impl Skill for GetFileContentSkill {
     }
 }
 
+// ── AddWorldObjectSkill ───────────────────────────────────────────────────────
+
+/// Add a new world object to the project JSON file.
+pub struct AddWorldObjectSkill {
+    pub objects: Vec<WorldObject>,
+    pub project_root: Option<std::path::PathBuf>,
+}
+
+impl Skill for AddWorldObjectSkill {
+    fn name(&self) -> &str { "add_world_object" }
+
+    fn description(&self) -> &str {
+        "向项目添加新的世界对象（人物/场景/地点/道具/势力）并保存到 Design/世界对象.json；\
+         name 为名称，kind 为类型（人物/场景/地点/道具/势力/其他），description 为描述（可选），background 为背景故事（可选）"
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name":        { "type": "string", "description": "对象名称" },
+                "kind":        { "type": "string", "description": "类型：人物/场景/地点/道具/势力/其他" },
+                "description": { "type": "string", "description": "描述（可选）" },
+                "background":  { "type": "string", "description": "背景故事（可选）" }
+            },
+            "required": ["name", "kind"]
+        })
+    }
+
+    fn execute(&self, args: &Value) -> Result<Value, String> {
+        let name = args.get("name").and_then(|v| v.as_str()).ok_or("缺少参数 name")?;
+        let kind_str = args.get("kind").and_then(|v| v.as_str()).ok_or("缺少参数 kind")?;
+        let description = args.get("description").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+        let background  = args.get("background").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+
+        if self.objects.iter().any(|o| o.name == name) {
+            return Err(format!("对象「{name}」已存在，请使用 update_world_object 修改"));
+        }
+
+        let kind = match kind_str {
+            "人物" => ObjectKind::Character,
+            "场景" => ObjectKind::Scene,
+            "地点" => ObjectKind::Location,
+            "道具" => ObjectKind::Item,
+            "势力" => ObjectKind::Faction,
+            _      => ObjectKind::Other,
+        };
+
+        let root = self.project_root.as_ref().ok_or("项目未打开")?;
+        let mut objects = self.objects.clone();
+        let mut new_obj = WorldObject::new(name, kind);
+        new_obj.description = description;
+        new_obj.background  = background;
+        objects.push(new_obj);
+
+        let json = serde_json::to_string_pretty(&objects)
+            .map_err(|e| format!("序列化失败: {e}"))?;
+        let path = root.join("Design").join("世界对象.json");
+        std::fs::create_dir_all(path.parent().unwrap())
+            .map_err(|e| format!("创建目录失败: {e}"))?;
+        std::fs::write(&path, &json)
+            .map_err(|e| format!("写入失败: {e}"))?;
+
+        Ok(serde_json::json!({
+            "status": "success",
+            "message": format!("已添加对象「{name}」（{kind_str}）到 Design/世界对象.json，请在主界面「从文件加载」以更新显示")
+        }))
+    }
+}
+
+// ── UpdateWorldObjectSkill ────────────────────────────────────────────────────
+
+/// Update the description and/or background of an existing world object.
+pub struct UpdateWorldObjectSkill {
+    pub objects: Vec<WorldObject>,
+    pub project_root: Option<std::path::PathBuf>,
+}
+
+impl Skill for UpdateWorldObjectSkill {
+    fn name(&self) -> &str { "update_world_object" }
+
+    fn description(&self) -> &str {
+        "更新已有世界对象的描述（description）或背景故事（background）并保存到 Design/世界对象.json；\
+         name 为要修改的对象名称（必填）"
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name":        { "type": "string", "description": "要修改的对象名称" },
+                "description": { "type": "string", "description": "新的描述（可选，省略则不修改）" },
+                "background":  { "type": "string", "description": "新的背景故事（可选，省略则不修改）" }
+            },
+            "required": ["name"]
+        })
+    }
+
+    fn execute(&self, args: &Value) -> Result<Value, String> {
+        let name = args.get("name").and_then(|v| v.as_str()).ok_or("缺少参数 name")?;
+
+        let mut objects = self.objects.clone();
+        let obj = objects.iter_mut()
+            .find(|o| o.name == name)
+            .ok_or_else(|| format!("未找到对象「{name}」，请先用 add_world_object 添加"))?;
+
+        if let Some(desc) = args.get("description").and_then(|v| v.as_str()) {
+            obj.description = desc.to_owned();
+        }
+        if let Some(bg) = args.get("background").and_then(|v| v.as_str()) {
+            obj.background = bg.to_owned();
+        }
+
+        let root = self.project_root.as_ref().ok_or("项目未打开")?;
+        let json = serde_json::to_string_pretty(&objects)
+            .map_err(|e| format!("序列化失败: {e}"))?;
+        let path = root.join("Design").join("世界对象.json");
+        std::fs::create_dir_all(path.parent().unwrap())
+            .map_err(|e| format!("创建目录失败: {e}"))?;
+        std::fs::write(&path, &json)
+            .map_err(|e| format!("写入失败: {e}"))?;
+
+        Ok(serde_json::json!({
+            "status": "success",
+            "message": format!("已更新对象「{name}」并保存到 Design/世界对象.json，请在主界面「从文件加载」以更新显示")
+        }))
+    }
+}
+
+// ── DeleteWorldObjectSkill ────────────────────────────────────────────────────
+
+/// Delete a world object by name from the project JSON file.
+pub struct DeleteWorldObjectSkill {
+    pub objects: Vec<WorldObject>,
+    pub project_root: Option<std::path::PathBuf>,
+}
+
+impl Skill for DeleteWorldObjectSkill {
+    fn name(&self) -> &str { "delete_world_object" }
+
+    fn description(&self) -> &str {
+        "从项目中删除指定名称的世界对象，并保存到 Design/世界对象.json；name 为要删除的对象名称"
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string", "description": "要删除的对象名称" }
+            },
+            "required": ["name"]
+        })
+    }
+
+    fn execute(&self, args: &Value) -> Result<Value, String> {
+        let name = args.get("name").and_then(|v| v.as_str()).ok_or("缺少参数 name")?;
+
+        let mut objects = self.objects.clone();
+        let before = objects.len();
+        objects.retain(|o| o.name != name);
+        if objects.len() == before {
+            return Err(format!("未找到对象「{name}」"));
+        }
+
+        let root = self.project_root.as_ref().ok_or("项目未打开")?;
+        let json = serde_json::to_string_pretty(&objects)
+            .map_err(|e| format!("序列化失败: {e}"))?;
+        let path = root.join("Design").join("世界对象.json");
+        std::fs::write(&path, &json)
+            .map_err(|e| format!("写入失败: {e}"))?;
+
+        Ok(serde_json::json!({
+            "status": "success",
+            "message": format!("已删除对象「{name}」并保存到 Design/世界对象.json，请在主界面「从文件加载」以更新显示")
+        }))
+    }
+}
+
+// ── AddChapterNodeSkill ───────────────────────────────────────────────────────
+
+/// Add a new top-level chapter node to the chapter structure JSON.
+pub struct AddChapterNodeSkill {
+    pub struct_roots: Vec<StructNode>,
+    pub project_root: Option<std::path::PathBuf>,
+}
+
+impl Skill for AddChapterNodeSkill {
+    fn name(&self) -> &str { "add_chapter_node" }
+
+    fn description(&self) -> &str {
+        "向章节结构添加新节点（总纲/卷/章/节）并保存到 Design/章节结构.json；\
+         title 为节点标题，kind 为层级类型（总纲/卷/章/节），summary 为摘要（可选）"
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "title":   { "type": "string", "description": "节点标题" },
+                "kind":    { "type": "string", "description": "层级类型：总纲/卷/章/节" },
+                "summary": { "type": "string", "description": "节点摘要（可选）" }
+            },
+            "required": ["title", "kind"]
+        })
+    }
+
+    fn execute(&self, args: &Value) -> Result<Value, String> {
+        let title = args.get("title").and_then(|v| v.as_str()).ok_or("缺少参数 title")?;
+        let kind_str = args.get("kind").and_then(|v| v.as_str()).ok_or("缺少参数 kind")?;
+        let summary = args.get("summary").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+
+        let kind = match kind_str {
+            "总纲" => StructKind::Outline,
+            "卷"   => StructKind::Volume,
+            "章"   => StructKind::Chapter,
+            _      => StructKind::Section,
+        };
+
+        let mut roots = self.struct_roots.clone();
+        let mut node = StructNode {
+            title:   title.to_owned(),
+            kind,
+            tag:     ChapterTag::Normal,
+            summary,
+            done:    false,
+            children: vec![],
+            linked_objects: vec![],
+            node_links: vec![],
+        };
+        // Set a meaningful summary default if none provided
+        if node.summary.is_empty() {
+            node.summary = String::new();
+        }
+        roots.push(node);
+
+        let root = self.project_root.as_ref().ok_or("项目未打开")?;
+        let json = serde_json::to_string_pretty(&roots)
+            .map_err(|e| format!("序列化失败: {e}"))?;
+        let path = root.join("Design").join("章节结构.json");
+        std::fs::create_dir_all(path.parent().unwrap())
+            .map_err(|e| format!("创建目录失败: {e}"))?;
+        std::fs::write(&path, &json)
+            .map_err(|e| format!("写入失败: {e}"))?;
+
+        Ok(serde_json::json!({
+            "status": "success",
+            "message": format!("已添加{kind_str}节点「{title}」到 Design/章节结构.json，请在主界面「从文件加载」以更新显示")
+        }))
+    }
+}
+
+// ── AddForeshadowSkill ────────────────────────────────────────────────────────
+
+/// Add a new foreshadow entry to the project.
+pub struct AddForeshadowSkill {
+    pub foreshadows: Vec<Foreshadow>,
+    pub project_root: Option<std::path::PathBuf>,
+}
+
+impl Skill for AddForeshadowSkill {
+    fn name(&self) -> &str { "add_foreshadow" }
+
+    fn description(&self) -> &str {
+        "向项目添加新伏笔并追加到 Content/伏笔.md；\
+         name 为伏笔名称，description 为描述（可选），related_chapters 为关联章节列表（可选，逗号分隔）"
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name":             { "type": "string", "description": "伏笔名称" },
+                "description":      { "type": "string", "description": "伏笔描述（可选）" },
+                "related_chapters": { "type": "string", "description": "关联章节，逗号分隔（可选）" }
+            },
+            "required": ["name"]
+        })
+    }
+
+    fn execute(&self, args: &Value) -> Result<Value, String> {
+        let name = args.get("name").and_then(|v| v.as_str()).ok_or("缺少参数 name")?;
+        let description = args.get("description").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+        let related_raw = args.get("related_chapters").and_then(|v| v.as_str()).unwrap_or("");
+        let related_chapters: Vec<String> = if related_raw.is_empty() {
+            vec![]
+        } else {
+            related_raw.split(',').map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()).collect()
+        };
+
+        if self.foreshadows.iter().any(|f| f.name == name) {
+            return Err(format!("伏笔「{name}」已存在"));
+        }
+
+        let root = self.project_root.as_ref().ok_or("项目未打开")?;
+        let path = root.join("Content").join("伏笔.md");
+
+        // Append to existing file (or create new).
+        let existing = std::fs::read_to_string(&path).unwrap_or_default();
+        let header = if existing.trim().is_empty() { "# 伏笔列表\n\n".to_owned() } else { String::new() };
+        let mut entry = format!("## {} ⏳ 未解决\n\n", name);
+        if !description.is_empty() {
+            entry.push_str(&format!("{}\n\n", description));
+        }
+        if !related_chapters.is_empty() {
+            entry.push_str(&format!("**关联章节**: {}\n\n", related_chapters.join("、")));
+        }
+        std::fs::create_dir_all(path.parent().unwrap())
+            .map_err(|e| format!("创建目录失败: {e}"))?;
+        std::fs::write(&path, format!("{}{}{}", existing, header, entry))
+            .map_err(|e| format!("写入失败: {e}"))?;
+
+        Ok(serde_json::json!({
+            "status": "success",
+            "message": format!("已添加伏笔「{name}」到 Content/伏笔.md，请在主界面「从文件加载」以更新显示")
+        }))
+    }
+}
+
+// ── ResolveForeshadowSkill ────────────────────────────────────────────────────
+
+/// Mark an existing foreshadow as resolved in the project Markdown file.
+pub struct ResolveForeshadowSkill {
+    pub foreshadows: Vec<Foreshadow>,
+    pub project_root: Option<std::path::PathBuf>,
+}
+
+impl Skill for ResolveForeshadowSkill {
+    fn name(&self) -> &str { "resolve_foreshadow" }
+
+    fn description(&self) -> &str {
+        "将指定伏笔标记为已解决，并更新 Content/伏笔.md；name 为要解决的伏笔名称"
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string", "description": "要标记为已解决的伏笔名称" }
+            },
+            "required": ["name"]
+        })
+    }
+
+    fn execute(&self, args: &Value) -> Result<Value, String> {
+        let name = args.get("name").and_then(|v| v.as_str()).ok_or("缺少参数 name")?;
+
+        if !self.foreshadows.iter().any(|f| f.name == name) {
+            return Err(format!("未找到伏笔「{name}」"));
+        }
+
+        let root = self.project_root.as_ref().ok_or("项目未打开")?;
+        let path = root.join("Content").join("伏笔.md");
+        let content = std::fs::read_to_string(&path)
+            .map_err(|e| format!("读取 Content/伏笔.md 失败: {e}"))?;
+
+        // Replace "## {name} ⏳ 未解决" with "## {name} ✅ 已解决"
+        let updated = content.replace(
+            &format!("## {} ⏳ 未解决", name),
+            &format!("## {} ✅ 已解决", name),
+        );
+        // Also handle case where the foreshadow was added without the status suffix
+        let updated = if updated == content {
+            content.replace(
+                &format!("## {}", name),
+                &format!("## {} ✅ 已解决", name),
+            )
+        } else {
+            updated
+        };
+
+        std::fs::write(&path, &updated)
+            .map_err(|e| format!("写入失败: {e}"))?;
+
+        Ok(serde_json::json!({
+            "status": "success",
+            "message": format!("已将伏笔「{name}」标记为已解决，请在主界面「从文件加载」以更新显示")
+        }))
+    }
+}
+
+// ── WriteFileContentSkill ─────────────────────────────────────────────────────
+
+/// Write or append text content to a project Markdown file.
+pub struct WriteFileContentSkill(pub Option<std::path::PathBuf>);
+
+impl Skill for WriteFileContentSkill {
+    fn name(&self) -> &str { "write_file_content" }
+
+    fn description(&self) -> &str {
+        "将文本内容写入项目中的 Markdown 文件；path 为相对于项目根目录的路径（如 Content/第一章.md）；\
+         content 为要写入的文本；mode 为写入模式：overwrite（覆盖）或 append（追加，默认）"
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path":    { "type": "string", "description": "相对于项目根目录的 .md 文件路径" },
+                "content": { "type": "string", "description": "要写入的文本内容" },
+                "mode":    { "type": "string", "description": "写入模式：overwrite（覆盖）或 append（追加，默认）" }
+            },
+            "required": ["path", "content"]
+        })
+    }
+
+    fn execute(&self, args: &Value) -> Result<Value, String> {
+        let rel = args.get("path").and_then(|v| v.as_str()).ok_or("缺少参数 path")?;
+        let content = args.get("content").and_then(|v| v.as_str()).ok_or("缺少参数 content")?;
+        let mode = args.get("mode").and_then(|v| v.as_str()).unwrap_or("append");
+
+        let root = self.0.as_ref().ok_or("项目未打开")?;
+
+        // Check extension first (cheap, no I/O)
+        let candidate = root.join(rel);
+        let ext = candidate.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if !matches!(ext, "md" | "markdown") {
+            return Err("仅支持写入 .md 文件".to_owned());
+        }
+
+        // Security: prevent path traversal
+        let canonical_root = std::fs::canonicalize(root)
+            .map_err(|e| format!("无法解析项目路径: {e}"))?;
+        // If the file doesn't exist yet, check the parent directory instead
+        let canonical_file = if candidate.exists() {
+            std::fs::canonicalize(&candidate)
+                .map_err(|e| format!("文件路径解析失败: {e}"))?
+        } else {
+            let parent = candidate.parent().ok_or("无效路径")?;
+            let canonical_parent = std::fs::canonicalize(parent)
+                .map_err(|_| "父目录不存在".to_owned())?;
+            canonical_parent.join(candidate.file_name().ok_or("无效文件名")?)
+        };
+        if !canonical_file.starts_with(&canonical_root) {
+            return Err("拒绝写入项目目录之外的文件".to_owned());
+        }
+
+        std::fs::create_dir_all(canonical_file.parent().unwrap())
+            .map_err(|e| format!("创建目录失败: {e}"))?;
+
+        if mode == "overwrite" {
+            std::fs::write(&canonical_file, content)
+                .map_err(|e| format!("写入失败: {e}"))?;
+        } else {
+            // append mode
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .create(true).append(true)
+                .open(&canonical_file)
+                .map_err(|e| format!("打开文件失败: {e}"))?;
+            file.write_all(content.as_bytes())
+                .map_err(|e| format!("追加写入失败: {e}"))?;
+        }
+
+        Ok(serde_json::json!({
+            "status":  "success",
+            "path":    rel,
+            "mode":    mode,
+            "message": format!("已成功以「{mode}」模式写入 {rel}")
+        }))
+    }
+}
+
+// ── GetTextTemplatesSkill ─────────────────────────────────────────────────────
+
+/// Return a catalogue of common novel-writing text templates.
+pub struct GetTextTemplatesSkill;
+
+impl Skill for GetTextTemplatesSkill {
+    fn name(&self) -> &str { "get_text_templates" }
+
+    fn description(&self) -> &str {
+        "返回常见小说写作文本模板列表，包括开场描写、场景转换、心理描写、对话引入等模板，\
+         供 LLM 参考用于辅助写作；category 为可选过滤类别"
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "description": "可选过滤类别：开场/场景/心理/对话/结尾/转折；为空时返回全部"
+                }
+            }
+        })
+    }
+
+    fn execute(&self, args: &Value) -> Result<Value, String> {
+        let filter = args.get("category").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
+
+        let all_templates: Vec<(&str, &str, &str)> = vec![
+            ("开场", "环境开场",   "【时间/地点】，【环境描写：光线、声音、气味】。【人物出场动作】。"),
+            ("开场", "悬念开场",   "【异常事件或诡异现象】，没有人知道，这只是【即将到来的更大事件】的开始。"),
+            ("开场", "动作开场",   "【人物姓名】【正在进行的紧张动作】，【简短心理活动或感官描写】。"),
+            ("场景", "场景切换",   "【时间过渡词】，场景从【地点A】转移到【地点B】。【新场景的第一印象描写】。"),
+            ("场景", "天气渲染",   "【天气状态】笼罩着【地点】，【象征性意象】，仿佛预示着【即将发生的事】。"),
+            ("场景", "夜晚氛围",   "夜幕低垂，【地点】沉浸在一片【氛围词：静谧/诡异/温柔】之中。【细节描写】。"),
+            ("心理", "内心独白",   "【人物姓名】在心里默默地想：【具体想法或疑问】。这种感觉【延伸描写】。"),
+            ("心理", "情感波动",   "【情绪词：愤怒/喜悦/悲伤】如同【比喻】席卷而来，【人物姓名】【相应的行为反应】。"),
+            ("心理", "犹豫决断",   "【人物】在【选项A】和【选项B】之间来回权衡。最终，【ta做出的选择】。"),
+            ("对话", "冲突对话",   "「【人物A的强硬或质问语气】」\n「【人物B的反应或反驳】」\n两人的目光在空气中碰撞。"),
+            ("对话", "柔和对话",   "「【人物A轻声说的话】」\n沉默了片刻，【人物B】才【ta的回应动作或话语】。"),
+            ("对话", "揭示秘密",   "「其实……」【人物A】深吸一口气，「【重要秘密或转折信息】」"),
+            ("结尾", "章节悬念",   "【概括本章收尾状态】，然而【人物】还不知道，更大的【挑战/危机/惊喜】正在等着ta。"),
+            ("结尾", "情感余韵",   "【人物】【动作或离去】，只留下【遗留物或氛围】，和那句话：「【令人回味的台词】」。"),
+            ("结尾", "伏笔收束",   "直到此刻，【之前埋下的伏笔】的真相终于浮出水面——【揭示内容】。"),
+            ("转折", "反转揭示",   "然而事情并非如此。真相是——【颠覆认知的信息】。"),
+            ("转折", "时间跳跃",   "三年后。【新时间点的场景或人物现状描写】。一切都变了，又好像什么都没变。"),
+            ("转折", "视角转换",   "如果换一个角度来看——【从对立方或第三方视角重新解读同一事件】。"),
+        ];
+
+        let templates: Vec<Value> = all_templates.iter()
+            .filter(|(cat, _, _)| filter.is_empty() || cat.contains(filter.as_str()))
+            .map(|(cat, name, tmpl)| serde_json::json!({
+                "category": cat,
+                "name":     name,
+                "template": tmpl,
+            }))
+            .collect();
+
+        Ok(Value::Array(templates))
+    }
+}
+
 // ── SkillSet ──────────────────────────────────────────────────────────────────
 
 /// A collection of skills made available to the agent.
@@ -329,13 +854,23 @@ impl SkillSet {
         project_root: Option<std::path::PathBuf>,
     ) -> Self {
         SkillSet(vec![
+            // ── Read-only skills ──────────────────────────────────────────────
             Arc::new(ListCharactersSkill(objects.clone())),
             Arc::new(GetCharacterInfoSkill(objects.clone())),
-            Arc::new(GetChapterOutlineSkill(struct_roots)),
-            Arc::new(SearchForeshadowsSkill(foreshadows)),
+            Arc::new(GetChapterOutlineSkill(struct_roots.clone())),
+            Arc::new(SearchForeshadowsSkill(foreshadows.clone())),
             Arc::new(GetMilestoneStatusSkill(milestones)),
             Arc::new(ListProjectFilesSkill(project_root.clone())),
-            Arc::new(GetFileContentSkill(project_root)),
+            Arc::new(GetFileContentSkill(project_root.clone())),
+            Arc::new(GetTextTemplatesSkill),
+            // ── Write / mutation skills ───────────────────────────────────────
+            Arc::new(AddWorldObjectSkill    { objects: objects.clone(), project_root: project_root.clone() }),
+            Arc::new(UpdateWorldObjectSkill { objects: objects.clone(), project_root: project_root.clone() }),
+            Arc::new(DeleteWorldObjectSkill { objects,                  project_root: project_root.clone() }),
+            Arc::new(AddChapterNodeSkill    { struct_roots,             project_root: project_root.clone() }),
+            Arc::new(AddForeshadowSkill     { foreshadows: foreshadows.clone(), project_root: project_root.clone() }),
+            Arc::new(ResolveForeshadowSkill { foreshadows,              project_root: project_root.clone() }),
+            Arc::new(WriteFileContentSkill(project_root)),
         ])
     }
 
@@ -674,7 +1209,7 @@ mod tests {
     #[test]
     fn test_skill_set_len() {
         let ss = make_skill_set();
-        assert_eq!(ss.len(), 7);
+        assert_eq!(ss.len(), 15);
     }
 
     #[test]
@@ -706,14 +1241,15 @@ mod tests {
     fn test_skill_set_to_openai_tools() {
         let ss = SkillSet::new(vec![], vec![], vec![], vec![], None);
         let tools = ss.to_openai_tools();
-        assert_eq!(tools.as_array().unwrap().len(), 7);
+        assert_eq!(tools.as_array().unwrap().len(), 15);
     }
 
     #[test]
     fn test_skill_set_tool_names() {
         let ss = SkillSet::new(vec![], vec![], vec![], vec![], None);
         let names = ss.tool_names();
-        assert_eq!(names.len(), 7);
+        assert_eq!(names.len(), 15);
+        // Read-only skills
         assert!(names.contains(&"list_characters"));
         assert!(names.contains(&"get_character_info"));
         assert!(names.contains(&"get_chapter_outline"));
@@ -721,13 +1257,22 @@ mod tests {
         assert!(names.contains(&"get_milestone_status"));
         assert!(names.contains(&"list_project_files"));
         assert!(names.contains(&"get_file_content"));
+        assert!(names.contains(&"get_text_templates"));
+        // Write/mutation skills
+        assert!(names.contains(&"add_world_object"));
+        assert!(names.contains(&"update_world_object"));
+        assert!(names.contains(&"delete_world_object"));
+        assert!(names.contains(&"add_chapter_node"));
+        assert!(names.contains(&"add_foreshadow"));
+        assert!(names.contains(&"resolve_foreshadow"));
+        assert!(names.contains(&"write_file_content"));
     }
 
     #[test]
     fn test_skill_descriptions() {
         let ss = SkillSet::new(vec![], vec![], vec![], vec![], None);
         let descs = ss.descriptions();
-        assert_eq!(descs.len(), 7);
+        assert_eq!(descs.len(), 15);
         let names: Vec<String> = descs.iter().map(|(n, _)| n.clone()).collect();
         assert!(names.contains(&"list_characters".to_owned()));
         assert!(names.contains(&"get_character_info".to_owned()));
@@ -736,6 +1281,14 @@ mod tests {
         assert!(names.contains(&"get_milestone_status".to_owned()));
         assert!(names.contains(&"list_project_files".to_owned()));
         assert!(names.contains(&"get_file_content".to_owned()));
+        assert!(names.contains(&"get_text_templates".to_owned()));
+        assert!(names.contains(&"add_world_object".to_owned()));
+        assert!(names.contains(&"update_world_object".to_owned()));
+        assert!(names.contains(&"delete_world_object".to_owned()));
+        assert!(names.contains(&"add_chapter_node".to_owned()));
+        assert!(names.contains(&"add_foreshadow".to_owned()));
+        assert!(names.contains(&"resolve_foreshadow".to_owned()));
+        assert!(names.contains(&"write_file_content".to_owned()));
     }
 
     // ── Skill: get_milestone_status ───────────────────────────────────────────
@@ -823,6 +1376,289 @@ mod tests {
         assert!(result.is_err());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── Skill: add_world_object ───────────────────────────────────────────────
+
+    #[test]
+    fn test_add_world_object_skill() {
+        let dir = std::env::temp_dir().join("qingmo_test_add_obj");
+        std::fs::create_dir_all(dir.join("Design")).unwrap();
+
+        let skill = AddWorldObjectSkill { objects: sample_objects(), project_root: Some(dir.clone()) };
+        let result = skill.execute(&serde_json::json!({
+            "name": "新角色", "kind": "人物", "description": "神秘人物"
+        })).unwrap();
+        assert_eq!(result["status"], "success");
+
+        // Verify file was written with 3 objects
+        let content = std::fs::read_to_string(dir.join("Design").join("世界对象.json")).unwrap();
+        let objs: Vec<WorldObject> = serde_json::from_str(&content).unwrap();
+        assert_eq!(objs.len(), 3);
+        assert!(objs.iter().any(|o| o.name == "新角色"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_add_world_object_duplicate() {
+        let dir = std::env::temp_dir().join("qingmo_test_add_obj_dup");
+        std::fs::create_dir_all(dir.join("Design")).unwrap();
+        let skill = AddWorldObjectSkill { objects: sample_objects(), project_root: Some(dir.clone()) };
+        let result = skill.execute(&serde_json::json!({"name": "李明", "kind": "人物"}));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("已存在"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_add_world_object_no_project() {
+        let skill = AddWorldObjectSkill { objects: vec![], project_root: None };
+        let result = skill.execute(&serde_json::json!({"name": "测试", "kind": "其他"}));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("项目未打开"));
+    }
+
+    // ── Skill: update_world_object ────────────────────────────────────────────
+
+    #[test]
+    fn test_update_world_object_skill() {
+        let dir = std::env::temp_dir().join("qingmo_test_upd_obj");
+        std::fs::create_dir_all(dir.join("Design")).unwrap();
+
+        let skill = UpdateWorldObjectSkill { objects: sample_objects(), project_root: Some(dir.clone()) };
+        let result = skill.execute(&serde_json::json!({
+            "name": "李明", "description": "更新后的描述"
+        })).unwrap();
+        assert_eq!(result["status"], "success");
+
+        let content = std::fs::read_to_string(dir.join("Design").join("世界对象.json")).unwrap();
+        let objs: Vec<WorldObject> = serde_json::from_str(&content).unwrap();
+        let obj = objs.iter().find(|o| o.name == "李明").unwrap();
+        assert_eq!(obj.description, "更新后的描述");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_update_world_object_not_found() {
+        let dir = std::env::temp_dir().join("qingmo_test_upd_obj_nf");
+        std::fs::create_dir_all(dir.join("Design")).unwrap();
+        let skill = UpdateWorldObjectSkill { objects: sample_objects(), project_root: Some(dir.clone()) };
+        let result = skill.execute(&serde_json::json!({"name": "不存在的人", "description": "x"}));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("未找到"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── Skill: delete_world_object ────────────────────────────────────────────
+
+    #[test]
+    fn test_delete_world_object_skill() {
+        let dir = std::env::temp_dir().join("qingmo_test_del_obj");
+        std::fs::create_dir_all(dir.join("Design")).unwrap();
+
+        let skill = DeleteWorldObjectSkill { objects: sample_objects(), project_root: Some(dir.clone()) };
+        let result = skill.execute(&serde_json::json!({"name": "李明"})).unwrap();
+        assert_eq!(result["status"], "success");
+
+        let content = std::fs::read_to_string(dir.join("Design").join("世界对象.json")).unwrap();
+        let objs: Vec<WorldObject> = serde_json::from_str(&content).unwrap();
+        assert_eq!(objs.len(), 1);
+        assert!(!objs.iter().any(|o| o.name == "李明"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_delete_world_object_not_found() {
+        let dir = std::env::temp_dir().join("qingmo_test_del_obj_nf");
+        std::fs::create_dir_all(dir.join("Design")).unwrap();
+        // Write existing JSON first so delete doesn't panic on missing file
+        let json = serde_json::to_string_pretty(&sample_objects()).unwrap();
+        std::fs::write(dir.join("Design").join("世界对象.json"), &json).unwrap();
+
+        let skill = DeleteWorldObjectSkill { objects: sample_objects(), project_root: Some(dir.clone()) };
+        let result = skill.execute(&serde_json::json!({"name": "不存在"}));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("未找到"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── Skill: add_chapter_node ───────────────────────────────────────────────
+
+    #[test]
+    fn test_add_chapter_node_skill() {
+        let dir = std::env::temp_dir().join("qingmo_test_add_ch");
+        std::fs::create_dir_all(dir.join("Design")).unwrap();
+
+        let skill = AddChapterNodeSkill { struct_roots: sample_roots(), project_root: Some(dir.clone()) };
+        let result = skill.execute(&serde_json::json!({
+            "title": "第二卷", "kind": "卷", "summary": "第二部分"
+        })).unwrap();
+        assert_eq!(result["status"], "success");
+
+        let content = std::fs::read_to_string(dir.join("Design").join("章节结构.json")).unwrap();
+        let roots: Vec<StructNode> = serde_json::from_str(&content).unwrap();
+        assert_eq!(roots.len(), 2);
+        assert!(roots.iter().any(|n| n.title == "第二卷"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── Skill: add_foreshadow ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_add_foreshadow_skill() {
+        let dir = std::env::temp_dir().join("qingmo_test_add_fs");
+        std::fs::create_dir_all(dir.join("Content")).unwrap();
+
+        let skill = AddForeshadowSkill { foreshadows: sample_foreshadows(), project_root: Some(dir.clone()) };
+        let result = skill.execute(&serde_json::json!({
+            "name": "新伏笔", "description": "描述", "related_chapters": "第一章,第二章"
+        })).unwrap();
+        assert_eq!(result["status"], "success");
+
+        let content = std::fs::read_to_string(dir.join("Content").join("伏笔.md")).unwrap();
+        assert!(content.contains("新伏笔"));
+        assert!(content.contains("第一章"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_add_foreshadow_duplicate() {
+        let skill = AddForeshadowSkill { foreshadows: sample_foreshadows(), project_root: None };
+        let result = skill.execute(&serde_json::json!({"name": "神秘信封"}));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("已存在"));
+    }
+
+    // ── Skill: resolve_foreshadow ─────────────────────────────────────────────
+
+    #[test]
+    fn test_resolve_foreshadow_skill() {
+        let dir = std::env::temp_dir().join("qingmo_test_resolve_fs");
+        std::fs::create_dir_all(dir.join("Content")).unwrap();
+
+        // Write an initial foreshadow file
+        let initial = "# 伏笔列表\n\n## 神秘信封 ⏳ 未解决\n\n第一章出现的信封\n\n";
+        std::fs::write(dir.join("Content").join("伏笔.md"), initial).unwrap();
+
+        let mut fs = sample_foreshadows();
+        let skill = ResolveForeshadowSkill { foreshadows: fs.clone(), project_root: Some(dir.clone()) };
+        let result = skill.execute(&serde_json::json!({"name": "神秘信封"})).unwrap();
+        assert_eq!(result["status"], "success");
+
+        let content = std::fs::read_to_string(dir.join("Content").join("伏笔.md")).unwrap();
+        assert!(content.contains("✅ 已解决"));
+        assert!(!content.contains("⏳ 未解决"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_resolve_foreshadow_not_found() {
+        let skill = ResolveForeshadowSkill { foreshadows: sample_foreshadows(), project_root: None };
+        let result = skill.execute(&serde_json::json!({"name": "不存在"}));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("未找到"));
+    }
+
+    // ── Skill: write_file_content ─────────────────────────────────────────────
+
+    #[test]
+    fn test_write_file_content_overwrite() {
+        let dir = std::env::temp_dir().join("qingmo_test_write_file");
+        std::fs::create_dir_all(dir.join("Content")).unwrap();
+        std::fs::write(dir.join("Content").join("ch1.md"), "old content").unwrap();
+
+        let skill = WriteFileContentSkill(Some(dir.clone()));
+        let result = skill.execute(&serde_json::json!({
+            "path": "Content/ch1.md", "content": "new content", "mode": "overwrite"
+        })).unwrap();
+        assert_eq!(result["status"], "success");
+        let content = std::fs::read_to_string(dir.join("Content").join("ch1.md")).unwrap();
+        assert_eq!(content, "new content");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_write_file_content_append() {
+        let dir = std::env::temp_dir().join("qingmo_test_append_file");
+        std::fs::create_dir_all(dir.join("Content")).unwrap();
+        std::fs::write(dir.join("Content").join("ch2.md"), "line1\n").unwrap();
+
+        let skill = WriteFileContentSkill(Some(dir.clone()));
+        let result = skill.execute(&serde_json::json!({
+            "path": "Content/ch2.md", "content": "line2\n"
+        })).unwrap();
+        assert_eq!(result["status"], "success");
+        let content = std::fs::read_to_string(dir.join("Content").join("ch2.md")).unwrap();
+        assert!(content.contains("line1"));
+        assert!(content.contains("line2"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_write_file_content_rejects_json() {
+        let dir = std::env::temp_dir().join("qingmo_test_write_json");
+        std::fs::create_dir_all(&dir).unwrap();
+        let skill = WriteFileContentSkill(Some(dir.clone()));
+        let result = skill.execute(&serde_json::json!({
+            "path": "Design/data.json", "content": "{}"
+        }));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("仅支持写入"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_write_file_content_rejects_traversal() {
+        let dir = std::env::temp_dir().join("qingmo_test_write_trav");
+        std::fs::create_dir_all(&dir).unwrap();
+        let skill = WriteFileContentSkill(Some(dir.clone()));
+        let result = skill.execute(&serde_json::json!({
+            "path": "../../evil.md", "content": "pwned"
+        }));
+        assert!(result.is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── Skill: get_text_templates ─────────────────────────────────────────────
+
+    #[test]
+    fn test_get_text_templates_all() {
+        let skill = GetTextTemplatesSkill;
+        let result = skill.execute(&serde_json::json!({})).unwrap();
+        let arr = result.as_array().unwrap();
+        // Should return all 18 templates
+        assert!(arr.len() >= 15);
+        // Each entry should have category, name, template
+        assert!(arr[0]["category"].is_string());
+        assert!(arr[0]["name"].is_string());
+        assert!(arr[0]["template"].is_string());
+    }
+
+    #[test]
+    fn test_get_text_templates_filtered() {
+        let skill = GetTextTemplatesSkill;
+        let result = skill.execute(&serde_json::json!({"category": "开场"})).unwrap();
+        let arr = result.as_array().unwrap();
+        assert!(arr.len() >= 2);
+        for item in arr {
+            assert_eq!(item["category"], "开场");
+        }
+    }
+
+    #[test]
+    fn test_get_text_templates_no_match() {
+        let skill = GetTextTemplatesSkill;
+        let result = skill.execute(&serde_json::json!({"category": "xyz_不存在"})).unwrap();
+        let arr = result.as_array().unwrap();
+        assert_eq!(arr.len(), 0);
     }
 
     // ── AgentBackend ──────────────────────────────────────────────────────────

@@ -447,6 +447,11 @@ pub struct MarkdownSettings {
     /// Auto-save interval in seconds. 0 = disabled.
     #[serde(default = "default_auto_save_interval")]
     pub auto_save_interval_secs: u32,
+    /// Show the "Files" tab in the navigation sidebar.
+    /// Off by default — users primarily navigate via the Chapter tree.
+    /// Can be enabled in Settings.
+    #[serde(default)]
+    pub show_files_tab: bool,
 }
 
 fn default_true() -> bool { true }
@@ -464,6 +469,7 @@ impl Default for MarkdownSettings {
             auto_extract_structure: false,
             editor_font_size: 13.0,
             auto_save_interval_secs: 60,
+            show_files_tab: false,
         }
     }
 }

@@ -1184,6 +1184,8 @@ mod tests {
         assert!(!s.auto_extract_structure);
         assert!((s.editor_font_size - 13.0).abs() < 1e-5);
         assert_eq!(s.auto_save_interval_secs, 60);
+        // Files tab hidden by default
+        assert!(!s.show_files_tab);
     }
 
     #[test]
