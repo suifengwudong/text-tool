@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 /// Returns the home directory, checking platform-appropriate env vars.
 fn dirs_home() -> Option<PathBuf> {
@@ -115,6 +116,19 @@ pub struct TextToolApp {
     pub(super) md_settings: MarkdownSettings,
     pub(super) show_settings_window: bool,
 
+    // ── Theme ─────────────────────────────────────────────────────────────────
+    pub(super) theme: AppTheme,
+
+    // ── Auto-save ─────────────────────────────────────────────────────────────
+    /// When the last auto-save ran (None = never run this session).
+    pub(super) last_auto_save: Option<Instant>,
+    /// Human-readable timestamp of last auto-save for the status bar.
+    pub(super) last_auto_save_label: String,
+
+    // ── Delete confirmation ────────────────────────────────────────────────────
+    /// File path pending deletion (move to 废稿) — shown in confirm dialog.
+    pub(super) delete_confirm_path: Option<PathBuf>,
+
     // ── Config persistence ────────────────────────────────────────────────────
     pub(super) last_project: Option<PathBuf>,
     /// Auto-load world objects / struct / foreshadows / milestones from files when opening project.
@@ -213,6 +227,10 @@ impl TextToolApp {
             left_preview_mode: false,
             md_settings: MarkdownSettings::default(),
             show_settings_window: false,
+            theme: AppTheme::Dark,
+            last_auto_save: None,
+            last_auto_save_label: String::new(),
+            delete_confirm_path: None,
             last_project: None,
             auto_load_from_files: false,
             show_search: false,
@@ -225,6 +243,7 @@ impl TextToolApp {
             app.llm_config = cfg.llm_config;
             app.md_settings = cfg.md_settings;
             app.auto_load_from_files = cfg.auto_load;
+            app.theme = cfg.theme;
             if let Some(p) = cfg.last_project {
                 let pb = PathBuf::from(p);
                 if pb.is_dir() {
@@ -494,6 +513,7 @@ impl TextToolApp {
             md_settings: self.md_settings.clone(),
             last_project: self.last_project.as_ref().map(|p| p.to_string_lossy().into_owned()),
             auto_load: self.auto_load_from_files,
+            theme: self.theme,
         };
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
