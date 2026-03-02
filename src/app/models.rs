@@ -407,13 +407,30 @@ pub struct MarkdownSettings {
     pub preview_font_size: f32,
     /// When a Markdown file is opened, default to preview mode.
     pub default_to_preview: bool,
+    /// Hide `.json` files from the project file tree by default.
+    /// JSON files are internal data files; users primarily write Markdown.
+    #[serde(default = "default_true")]
+    pub hide_json: bool,
+    /// Number of spaces inserted when Tab is pressed in the Markdown editor.
+    #[serde(default = "default_tab_size")]
+    pub tab_size: u8,
+    /// Automatically extract Markdown headings into the Structure panel when
+    /// a file is saved (Ctrl+S).
+    #[serde(default)]
+    pub auto_extract_structure: bool,
 }
+
+fn default_true() -> bool { true }
+fn default_tab_size() -> u8 { 2 }
 
 impl Default for MarkdownSettings {
     fn default() -> Self {
         MarkdownSettings {
             preview_font_size: 14.0,
             default_to_preview: false,
+            hide_json: true,
+            tab_size: 2,
+            auto_extract_structure: false,
         }
     }
 }
@@ -454,6 +471,16 @@ pub enum StructViewMode {
     Timeline,
 }
 
+/// Toggle between filesystem view and chapter-tree view in the Novel panel left sidebar.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FileTreeMode {
+    /// Show the raw project filesystem (folders and files).
+    Files,
+    /// Show the chapter structure tree (from struct_roots). Each leaf chapter
+    /// can be clicked to open its associated `.md` file in the editor.
+    Chapters,
+}
+
 // ── Panel IDs ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -471,8 +498,8 @@ impl Panel {
         match self {
             Panel::Novel     => "📝",
             Panel::Objects   => "🌐",
-            Panel::Structure => "🏗",
-            Panel::Llm       => "🤖",
+            Panel::Structure => "纲",
+            Panel::Llm       => "智",
         }
     }
     pub fn label(self) -> &'static str {

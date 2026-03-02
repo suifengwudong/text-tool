@@ -43,7 +43,16 @@ impl TextToolApp {
             .min_width(180.0)
             .show(ctx, |ui| {
                 ui.add_space(4.0);
-                ui.heading("LLM 配置");
+                ui.horizontal(|ui| {
+                    ui.heading("LLM 配置");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            RichText::new(self.current_backend_name())
+                                .small()
+                                .color(Color32::from_rgb(100, 200, 120)),
+                        );
+                    });
+                });
                 ui.separator();
 
                 // ── Backend selector ───────────────────────────────────────────
@@ -58,7 +67,7 @@ impl TextToolApp {
                     if ui.selectable_label(self.llm_backend_idx == 2, "🖥 本地服务器").clicked() {
                         self.llm_backend_idx = 2;
                     }
-                    if ui.selectable_label(self.llm_backend_idx == 3, "🤖 Agent").clicked() {
+                    if ui.selectable_label(self.llm_backend_idx == 3, "⚡ Agent").clicked() {
                         self.llm_backend_idx = 3;
                     }
                 });
@@ -133,10 +142,10 @@ impl TextToolApp {
                         ui.add(egui::TextEdit::multiline(&mut self.llm_config.system_prompt)
                             .desired_rows(2)
                             .desired_width(f32::INFINITY)
-                            .hint_text("例如：你是一个专业的小说编辑。"));
+                            .hint_text("留空时自动注入项目数据作为上下文"));
                         ui.add_space(6.0);
                         ui.separator();
-                        ui.label(RichText::new("当前可用技能:").small()
+                        ui.label(RichText::new("当前可用技能 (最多 5 轮调用):").small()
                             .color(Color32::from_gray(160)));
                         // Snapshot skill metadata (static names — no clone of data)
                         for (name, desc) in &[

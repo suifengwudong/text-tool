@@ -14,7 +14,6 @@ use super::{LlmConfig, WorldObject, StructNode, Foreshadow};
 /// - Executed synchronously in the background thread via `execute(&args)`.
 /// - Safe to share across threads (`Send + Sync`).
 pub trait Skill: Send + Sync {
-    #[allow(dead_code)]
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     /// JSON Schema object describing the function parameters.
@@ -214,6 +213,11 @@ impl SkillSet {
     #[allow(dead_code)]
     pub fn is_empty(&self) -> bool { self.0.is_empty() }
 
+    /// Names of all registered skills (used for auto-generating system prompts).
+    pub fn tool_names(&self) -> Vec<&str> {
+        self.0.iter().map(|s| s.name()).collect()
+    }
+
     /// Names and descriptions of all skills (for displaying in the UI).
     #[allow(dead_code)]
     pub fn descriptions(&self) -> Vec<(String, String)> {
@@ -259,8 +263,14 @@ pub struct AgentBackend {
     pub skills: SkillSet,
 }
 
+impl AgentBackend {
+    /// Static backend name — allows callers to read the name without
+    /// constructing a full `AgentBackend` (which requires a `SkillSet`).
+    pub const BACKEND_NAME: &'static str = "Agent (工具调用)";
+}
+
 impl LlmBackend for AgentBackend {
-    fn name(&self) -> &'static str { "🤖 Agent (工具调用)" }
+    fn name(&self) -> &'static str { Self::BACKEND_NAME }
 
     fn complete(&self, config: &LlmConfig, prompt: &str) -> Result<String, String> {
         let model = {
@@ -270,12 +280,22 @@ impl LlmBackend for AgentBackend {
 
         // ── Build initial message list ─────────────────────────────────────────
         let mut messages: Vec<Value> = Vec::new();
-        if !config.system_prompt.trim().is_empty() {
-            messages.push(serde_json::json!({
-                "role": "system",
-                "content": config.system_prompt
-            }));
-        }
+
+        // Use user-provided system prompt if present; otherwise inject a default
+        // one that describes the agent's purpose and available tools.
+        let sys_text = if config.system_prompt.trim().is_empty() {
+            let tool_names = self.skills.tool_names().join("、");
+            format!(
+                "你是一个专业的小说写作助手，正在协助作者完善小说项目。\
+                 你可以通过以下工具查阅项目数据：{}。\
+                 请优先使用工具获取最新数据，再给出回答。\
+                 始终用中文回复。",
+                tool_names
+            )
+        } else {
+            config.system_prompt.trim().to_owned()
+        };
+        messages.push(serde_json::json!({ "role": "system", "content": sys_text }));
         messages.push(serde_json::json!({ "role": "user", "content": prompt }));
 
         let tools = self.skills.to_openai_tools();
@@ -301,10 +321,17 @@ impl LlmBackend for AgentBackend {
                 .read_json()
                 .map_err(|e| format!("响应解析失败: {e}"))?;
 
+            // Surface API-level errors (e.g. auth failure, model not found).
+            if let Some(err_obj) = json.get("error") {
+                let msg = err_obj.get("message").and_then(|v| v.as_str())
+                    .unwrap_or("未知错误");
+                return Err(format!("API 错误: {msg} (原始响应: {err_obj})"));
+            }
+
             let message = json
                 .get("choices").and_then(|v| v.get(0))
                 .and_then(|v| v.get("message"))
-                .ok_or_else(|| format!("无法解析 LLM 响应: {json}"))?;
+                .ok_or_else(|| format!("无法解析 LLM 响应 (轮次 {}/{MAX_ROUNDS}): {json}", round + 1))?;
 
             // ── Handle tool calls ──────────────────────────────────────────────
             if let Some(calls) = message.get("tool_calls").and_then(|v| v.as_array()) {
@@ -333,8 +360,8 @@ impl LlmBackend for AgentBackend {
 
                     // Record tool invocation for user visibility.
                     agent_log.push_str(&format!(
-                        "[技能调用] {}({})\n{}\n\n",
-                        fn_name, args_str, result_s
+                        "[技能调用 {}/{}] {}({})\n{}\n\n",
+                        round + 1, MAX_ROUNDS, fn_name, args_str, result_s
                     ));
 
                     messages.push(serde_json::json!({
@@ -356,6 +383,10 @@ impl LlmBackend for AgentBackend {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_owned();
+
+                if content.trim().is_empty() {
+                    return Err("Agent 返回了空响应，请检查模型配置或简化请求".to_owned());
+                }
 
                 return if agent_log.is_empty() {
                     Ok(content)
@@ -534,6 +565,17 @@ mod tests {
     }
 
     #[test]
+    fn test_skill_set_tool_names() {
+        let ss = SkillSet::new(vec![], vec![], vec![]);
+        let names = ss.tool_names();
+        assert_eq!(names.len(), 4);
+        assert!(names.contains(&"list_characters"));
+        assert!(names.contains(&"get_character_info"));
+        assert!(names.contains(&"get_chapter_outline"));
+        assert!(names.contains(&"search_foreshadows"));
+    }
+
+    #[test]
     fn test_skill_descriptions() {
         let ss = SkillSet::new(vec![], vec![], vec![]);
         let descs = ss.descriptions();
@@ -552,6 +594,14 @@ mod tests {
         let agent = AgentBackend {
             skills: SkillSet::new(vec![], vec![], vec![]),
         };
-        assert_eq!(agent.name(), "🤖 Agent (工具调用)");
+        assert_eq!(agent.name(), AgentBackend::BACKEND_NAME);
+        assert_eq!(agent.name(), "Agent (工具调用)");
+    }
+
+    #[test]
+    fn test_agent_backend_name_const() {
+        // BACKEND_NAME must not contain the broken emoji (🤖)
+        assert!(!AgentBackend::BACKEND_NAME.contains('\u{1F916}'));
+        assert!(AgentBackend::BACKEND_NAME.contains("Agent"));
     }
 }

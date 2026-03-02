@@ -14,6 +14,8 @@ mod models;
 mod file_manager;
 mod llm_backend;
 mod agent;
+mod sync;
+mod search;
 mod panel;
 mod ui_helpers;
 
@@ -89,6 +91,8 @@ pub struct TextToolApp {
     // ── View mode toggles ─────────────────────────────────────────────────────
     pub(super) obj_view_mode: ObjectViewMode,
     pub(super) struct_view_mode: StructViewMode,
+    /// Toggle between filesystem and chapter-tree in the Novel panel left sidebar.
+    pub(super) file_tree_mode: FileTreeMode,
 
     // ── LLM Assistance (Panel::Llm) ──────────────────────────────────────────
     pub(super) llm_config: LlmConfig,
@@ -179,6 +183,7 @@ impl TextToolApp {
             new_ms_name: String::new(),
             obj_view_mode: ObjectViewMode::List,
             struct_view_mode: StructViewMode::Tree,
+            file_tree_mode: FileTreeMode::Files,
             llm_config: LlmConfig {
                 model_path: String::new(),
                 api_url: "http://localhost:11434/api/generate".to_owned(),
@@ -237,12 +242,13 @@ impl TextToolApp {
     }
 
     pub(super) fn refresh_tree(&mut self) {
+        let hide_json = self.md_settings.hide_json;
         if let Some(root) = &self.project_root {
             self.file_tree = ["Content", "Design", "废稿"]
                 .iter()
                 .filter_map(|sub| {
                     let p = root.join(sub);
-                    FileNode::from_path(&p)
+                    FileNode::from_path_filtered(&p, hide_json)
                 })
                 .collect();
         }
@@ -302,106 +308,6 @@ impl TextToolApp {
             let open_in_left = !path.extension().and_then(|e| e.to_str()).eq(&Some("json"));
             self.open_file_in_pane(&path, open_in_left);
             self.status = format!("已创建: {}", path.display());
-        }
-    }
-
-    /// Sync: generate outline JSON from the left markdown pane.
-    pub(super) fn sync_outline_to_right(&mut self) {
-        let outline = if let Some(lf) = &self.left_file {
-            if lf.is_markdown() {
-                Some(parse_outline(&lf.content))
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        if let Some(entries) = outline {
-            let json = serde_json::to_string_pretty(&entries)
-                .unwrap_or_else(|_| "[]".to_owned());
-            if let Some(rf) = &mut self.right_file {
-                if rf.is_json() {
-                    rf.content = json;
-                    rf.modified = true;
-                    self.status = "已从 Markdown 同步大纲到 JSON".to_owned();
-                    return;
-                }
-            }
-            self.status = "请先在右侧打开一个 JSON 文件".to_owned();
-        } else {
-            self.status = "请先在左侧打开一个 Markdown 文件".to_owned();
-        }
-    }
-
-    /// Write `content` to `<project_root>/<subdir>/<filename>`.
-    /// Sets `self.status` on error or when no project is open.
-    /// Returns `true` on success.
-    fn write_project_file(&mut self, subdir: &str, filename: &str, content: &str) -> bool {
-        if let Some(root) = self.project_root.as_ref() {
-            let path = root.join(subdir).join(filename);
-            if let Err(e) = std::fs::write(&path, content) {
-                self.status = format!("写入 {} 失败: {e}", path.display());
-                return false;
-            }
-            true
-        } else {
-            self.status = "请先打开一个项目".to_owned();
-            false
-        }
-    }
-
-    /// Sync: save world objects to Design/世界对象.json.
-    pub(super) fn sync_world_objects_to_json(&mut self) {
-        match serde_json::to_string_pretty(&self.world_objects) {
-            Ok(json) => {
-                if self.write_project_file("Design", "世界对象.json", &json) {
-                    self.status = "世界对象已同步到 Design/世界对象.json".to_owned();
-                }
-            }
-            Err(e) => self.status = format!("序列化失败: {e}"),
-        }
-    }
-
-    /// Sync: save struct tree to Design/章节结构.json.
-    pub(super) fn sync_struct_to_json(&mut self) {
-        match serde_json::to_string_pretty(&self.struct_roots) {
-            Ok(json) => {
-                if self.write_project_file("Design", "章节结构.json", &json) {
-                    self.status = "章节结构已同步到 Design/章节结构.json".to_owned();
-                }
-            }
-            Err(e) => self.status = format!("序列化失败: {e}"),
-        }
-    }
-
-    /// Sync: save milestones to Design/里程碑.json.
-    pub(super) fn sync_milestones_to_json(&mut self) {
-        match serde_json::to_string_pretty(&self.milestones) {
-            Ok(json) => {
-                if self.write_project_file("Design", "里程碑.json", &json) {
-                    self.status = "里程碑已同步到 Design/里程碑.json".to_owned();
-                }
-            }
-            Err(e) => self.status = format!("序列化失败: {e}"),
-        }
-    }
-
-    /// Sync: save foreshadows to Content/伏笔.md in the project.
-    pub(super) fn sync_foreshadows_to_md(&mut self) {
-        let mut md = String::from("# 伏笔列表\n\n");
-        for fs in &self.foreshadows {
-            let status = if fs.resolved { "✅ 已解决" } else { "⏳ 未解决" };
-            md.push_str(&format!("## {} {}\n\n", fs.name, status));
-            if !fs.description.is_empty() {
-                md.push_str(&format!("{}\n\n", fs.description));
-            }
-            if !fs.related_chapters.is_empty() {
-                md.push_str(&format!("**关联章节**: {}\n\n", fs.related_chapters.join("、")));
-            }
-        }
-        if self.write_project_file("Content", "伏笔.md", &md) {
-            self.status = "伏笔已同步到 Content/伏笔.md".to_owned();
         }
     }
 
@@ -495,6 +401,17 @@ impl TextToolApp {
         AgentBackend { skills: self.build_skill_set() }
     }
 
+    /// Return the human-readable name of the currently-selected LLM backend.
+    /// Uses the `LlmBackend::name()` method on each concrete type.
+    pub(super) fn current_backend_name(&self) -> &'static str {
+        match self.llm_backend_idx {
+            1 => ApiBackend.name(),
+            2 => LocalServerBackend.name(),
+            3 => AgentBackend::BACKEND_NAME,
+            _ => MockBackend.name(),
+        }
+    }
+
     /// Return the LLM backend that corresponds to `self.llm_backend_idx`.
     ///
     /// | idx | Backend |
@@ -554,208 +471,6 @@ impl TextToolApp {
         let text = std::fs::read_to_string(&path).ok()?;
         serde_json::from_str(&text).ok()
     }
-
-    // ── Reverse sync (file → app state) ──────────────────────────────────────
-
-    /// Load world objects from `Design/世界对象.json` into `self.world_objects`.
-    pub(super) fn load_world_objects_from_json(&mut self) {
-        let Some(root) = self.project_root.as_ref() else {
-            self.status = "请先打开一个项目".to_owned(); return;
-        };
-        let path = root.join("Design").join("世界对象.json");
-        match std::fs::read_to_string(&path) {
-            Ok(text) => match serde_json::from_str::<Vec<WorldObject>>(&text) {
-                Ok(objs) => {
-                    self.world_objects = objs;
-                    self.selected_obj_idx = None;
-                    self.status = format!("已从 {} 加载世界对象", path.display());
-                }
-                Err(e) => self.status = format!("解析失败: {e}"),
-            },
-            Err(e) => self.status = format!("读取失败: {e}"),
-        }
-    }
-
-    /// Load chapter structure from `Design/章节结构.json` into `self.struct_roots`.
-    pub(super) fn load_struct_from_json(&mut self) {
-        let Some(root) = self.project_root.as_ref() else {
-            self.status = "请先打开一个项目".to_owned(); return;
-        };
-        let path = root.join("Design").join("章节结构.json");
-        match std::fs::read_to_string(&path) {
-            Ok(text) => match serde_json::from_str::<Vec<StructNode>>(&text) {
-                Ok(nodes) => {
-                    self.struct_roots = nodes;
-                    self.selected_node_path.clear();
-                    self.status = format!("已从 {} 加载章节结构", path.display());
-                }
-                Err(e) => self.status = format!("解析失败: {e}"),
-            },
-            Err(e) => self.status = format!("读取失败: {e}"),
-        }
-    }
-
-    /// Load milestones from `Design/里程碑.json` into `self.milestones`.
-    pub(super) fn load_milestones_from_json(&mut self) {
-        let Some(root) = self.project_root.as_ref() else {
-            self.status = "请先打开一个项目".to_owned(); return;
-        };
-        let path = root.join("Design").join("里程碑.json");
-        match std::fs::read_to_string(&path) {
-            Ok(text) => match serde_json::from_str::<Vec<Milestone>>(&text) {
-                Ok(ms) => {
-                    self.milestones = ms;
-                    self.selected_ms_idx = None;
-                    self.status = format!("已从 {} 加载里程碑", path.display());
-                }
-                Err(e) => self.status = format!("解析失败: {e}"),
-            },
-            Err(e) => self.status = format!("读取失败: {e}"),
-        }
-    }
-
-    /// Parse `Content/伏笔.md` → `self.foreshadows`.
-    /// Headings (`## name`) become foreshadow entries; `✅` in the heading marks them resolved.
-    pub(super) fn load_foreshadows_from_md(&mut self) {
-        let Some(root) = self.project_root.as_ref() else {
-            self.status = "请先打开一个项目".to_owned(); return;
-        };
-        let path = root.join("Content").join("伏笔.md");
-        match std::fs::read_to_string(&path) {
-            Ok(text) => {
-                let mut foreshadows = Vec::new();
-                for line in text.lines() {
-                    if let Some(rest) = line.strip_prefix("## ") {
-                        let resolved = rest.contains('✅');
-                        let name = rest.replace("✅", "").replace("已解决", "")
-                            .replace("⏳", "").replace("未解决", "").trim().to_owned();
-                        if !name.is_empty() {
-                            let mut fs = Foreshadow::new(&name);
-                            fs.resolved = resolved;
-                            foreshadows.push(fs);
-                        }
-                    }
-                }
-                self.foreshadows = foreshadows;
-                self.selected_fs_idx = None;
-                self.status = format!("已从 {} 加载伏笔", path.display());
-            }
-            Err(e) => self.status = format!("读取失败: {e}"),
-        }
-    }
-
-    /// Run all four reverse-sync loads.
-    pub(super) fn load_all_from_files(&mut self) {
-        self.load_world_objects_from_json();
-        self.load_struct_from_json();
-        self.load_milestones_from_json();
-        self.load_foreshadows_from_md();
-        self.status = "已从文件加载所有数据".to_owned();
-    }
-
-    // ── Full-text search ──────────────────────────────────────────────────────
-
-    /// Scan all `.md` and `.json` files under the project root for `self.search_query`.
-    pub(super) fn run_search(&mut self) {
-        self.search_results.clear();
-        let query = self.search_query.clone();
-        if query.is_empty() { return; }
-        let Some(root) = self.project_root.clone() else {
-            self.status = "请先打开一个项目".to_owned(); return;
-        };
-        Self::search_dir(&root, &query, &mut self.search_results);
-        self.status = format!("搜索「{}」找到 {} 处结果", query, self.search_results.len());
-    }
-
-    fn search_dir(dir: &Path, query: &str, results: &mut Vec<SearchResult>) {
-        let Ok(entries) = std::fs::read_dir(dir) else { return };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                Self::search_dir(&path, query, results);
-            } else {
-                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                if ext == "md" || ext == "json" {
-                    if let Ok(text) = std::fs::read_to_string(&path) {
-                        for (line_no, line) in text.lines().enumerate() {
-                            if line.contains(query) {
-                                results.push(SearchResult {
-                                    file_path: path.clone(),
-                                    line_no: line_no + 1,
-                                    line: line.to_owned(),
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // ── Export and backup ─────────────────────────────────────────────────────
-
-    /// Concatenate all `Content/*.md` files and save to a user-chosen file.
-    pub(super) fn export_chapters_merged(&mut self) {
-        let Some(root) = self.project_root.as_ref() else {
-            self.status = "请先打开一个项目".to_owned(); return;
-        };
-        let content_dir = root.join("Content");
-        let mut md_files: Vec<PathBuf> = std::fs::read_dir(&content_dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("md"))
-            .collect();
-        md_files.sort();
-
-        let mut merged = String::new();
-        for path in &md_files {
-            if let Ok(text) = std::fs::read_to_string(path) {
-                let name = path.file_name().unwrap_or_default().to_string_lossy();
-                merged.push_str(&format!("# ── {} ──\n\n", name));
-                merged.push_str(&text);
-                merged.push_str("\n\n");
-            }
-        }
-
-        let dummy = PathBuf::from("merged.md");
-        if let Some(dest) = rfd_save_file(&dummy) {
-            match std::fs::write(&dest, &merged) {
-                Ok(_) => self.status = format!("已导出合集到 {}", dest.display()),
-                Err(e) => self.status = format!("导出失败: {e}"),
-            }
-        }
-    }
-
-    /// Copy the entire project folder to a user-selected destination directory.
-    pub(super) fn backup_project(&mut self) {
-        let Some(root) = self.project_root.clone() else {
-            self.status = "请先打开一个项目".to_owned(); return;
-        };
-        let Some(dest_parent) = rfd_pick_folder() else { return };
-        let folder_name = root.file_name().unwrap_or_default();
-        let dest = dest_parent.join(folder_name);
-        match Self::copy_dir_all(&root, &dest) {
-            Ok(_) => self.status = format!("已备份到 {}", dest.display()),
-            Err(e) => self.status = format!("备份失败: {e}"),
-        }
-    }
-
-    fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
-        std::fs::create_dir_all(dst)?;
-        for entry in std::fs::read_dir(src)? {
-            let entry = entry?;
-            let ty = entry.file_type()?;
-            let dst_path = dst.join(entry.file_name());
-            if ty.is_dir() {
-                Self::copy_dir_all(&entry.path(), &dst_path)?;
-            } else {
-                std::fs::copy(entry.path(), dst_path)?;
-            }
-        }
-        Ok(())
-    }
 }
 
 // ── eframe::App impl ──────────────────────────────────────────────────────────
@@ -799,31 +514,6 @@ impl eframe::App for TextToolApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_parse_outline_empty() {
-        let result = parse_outline("");
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_parse_outline_headings() {
-        let md = "# Chapter 1\n## Scene 1\n## Scene 2\n# Chapter 2\n";
-        let result = parse_outline(md);
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0].title, "Chapter 1");
-        assert_eq!(result[0].children.len(), 2);
-        assert_eq!(result[0].children[0].title, "Scene 1");
-        assert_eq!(result[1].title, "Chapter 2");
-        assert!(result[1].children.is_empty());
-    }
-
-    #[test]
-    fn test_parse_outline_no_headings() {
-        let md = "Just some text\nNo headings here.";
-        let result = parse_outline(md);
-        assert!(result.is_empty());
-    }
 
     #[test]
     fn test_open_file_is_markdown() {
@@ -1039,6 +729,7 @@ mod tests {
         let s = MarkdownSettings {
             preview_font_size: 18.0,
             default_to_preview: true,
+            ..MarkdownSettings::default()
         };
         assert_eq!(s.preview_font_size, 18.0);
         assert!(s.default_to_preview);
@@ -1161,7 +852,11 @@ mod tests {
 
     #[test]
     fn test_markdown_settings_serialization() {
-        let s = MarkdownSettings { preview_font_size: 18.0, default_to_preview: true };
+        let s = MarkdownSettings {
+            preview_font_size: 18.0,
+            default_to_preview: true,
+            ..MarkdownSettings::default()
+        };
         let json = serde_json::to_string(&s).unwrap();
         let d: MarkdownSettings = serde_json::from_str(&json).unwrap();
         assert!((d.preview_font_size - 18.0).abs() < 1e-5);
@@ -1179,7 +874,11 @@ mod tests {
                 use_local: true,
                 system_prompt: String::new(),
             },
-            md_settings: MarkdownSettings { preview_font_size: 16.0, default_to_preview: true },
+            md_settings: MarkdownSettings {
+                preview_font_size: 16.0,
+                default_to_preview: true,
+                ..MarkdownSettings::default()
+            },
             last_project: Some("/home/user/my_novel".to_owned()),
             auto_load: true,
         };
@@ -1263,7 +962,7 @@ mod tests {
         std::fs::write(dir.join("ignore.txt"), "主角 should not be found").unwrap();
 
         let mut results = Vec::new();
-        TextToolApp::search_dir(&dir, "主角", &mut results);
+        crate::app::search::search_dir(&dir, "主角", &mut results);
 
         // Should find matches in .md and .json but not .txt
         assert!(!results.is_empty());
@@ -1287,7 +986,7 @@ mod tests {
         std::fs::create_dir_all(&sub).unwrap();
         std::fs::write(sub.join("file2.json"), "{}").unwrap();
 
-        TextToolApp::copy_dir_all(&src, &dst).unwrap();
+        crate::app::search::copy_dir_all(&src, &dst).unwrap();
 
         assert!(dst.join("file1.md").exists());
         assert!(dst.join("subdir").join("file2.json").exists());
@@ -1296,5 +995,42 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&src);
         let _ = std::fs::remove_dir_all(&dst);
+    }
+
+    #[test]
+    fn test_markdown_settings_new_fields_defaults() {
+        let s = MarkdownSettings::default();
+        assert!(s.hide_json);
+        assert_eq!(s.tab_size, 2);
+        assert!(!s.auto_extract_structure);
+    }
+
+    #[test]
+    fn test_markdown_settings_hide_json_roundtrip() {
+        // Old JSON without new fields should deserialize with defaults.
+        let old_json = r#"{"preview_font_size":14.0,"default_to_preview":false}"#;
+        let s: MarkdownSettings = serde_json::from_str(old_json).unwrap();
+        assert!(s.hide_json);        // should default to true
+        assert_eq!(s.tab_size, 2);   // should default to 2
+    }
+
+    #[test]
+    fn test_file_node_from_path_filtered_hides_json() {
+        let dir = std::env::temp_dir().join("qingmo_test_filetree");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("chapter1.md"), "hello").unwrap();
+        std::fs::write(dir.join("data.json"), "{}").unwrap();
+
+        let node_show = FileNode::from_path_filtered(&dir, false).unwrap();
+        let node_hide = FileNode::from_path_filtered(&dir, true).unwrap();
+
+        let show_names: Vec<_> = node_show.children.iter().map(|n| &n.name).collect();
+        let hide_names: Vec<_> = node_hide.children.iter().map(|n| &n.name).collect();
+
+        assert!(show_names.iter().any(|n| n.as_str() == "data.json"));
+        assert!(!hide_names.iter().any(|n| n.as_str() == "data.json"));
+        assert!(hide_names.iter().any(|n| n.as_str() == "chapter1.md"));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

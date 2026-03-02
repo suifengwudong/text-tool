@@ -38,6 +38,15 @@ impl TextToolApp {
                         }
                     });
                 });
+                // JSON sync buttons
+                ui.horizontal(|ui| {
+                    if ui.small_button("⬆ 保存JSON").on_hover_text("保存世界对象到 Design/世界对象.json").clicked() {
+                        self.sync_world_objects_to_json();
+                    }
+                    if ui.small_button("⬇ 加载JSON").on_hover_text("从 Design/世界对象.json 加载世界对象").clicked() {
+                        self.load_world_objects_from_json();
+                    }
+                });
                 ui.separator();
 
                 // Kind filter chips

@@ -13,7 +13,6 @@ pub trait LlmBackend: Send + Sync {
     fn complete(&self, config: &LlmConfig, prompt: &str) -> Result<String, String>;
 
     /// Human-readable name shown in the UI.
-    #[allow(dead_code)]
     fn name(&self) -> &'static str;
 }
 

@@ -43,6 +43,15 @@ impl TextToolApp {
                         }
                     });
                 });
+                // JSON sync buttons
+                ui.horizontal(|ui| {
+                    if ui.small_button("⬆ 保存JSON").on_hover_text("保存章节结构到 Design/章节结构.json").clicked() {
+                        self.sync_struct_to_json();
+                    }
+                    if ui.small_button("⬇ 加载JSON").on_hover_text("从 Design/章节结构.json 加载章节结构").clicked() {
+                        self.load_struct_from_json();
+                    }
+                });
                 ui.separator();
 
                 // Add root node controls
