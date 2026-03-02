@@ -85,7 +85,7 @@ pub struct TextToolApp {
     pub(super) llm_config: LlmConfig,
     pub(super) llm_prompt: String,
     pub(super) llm_output: String,
-    /// Currently selected backend index: 0 = mock, 1 = API, 2 = LocalServer.
+    /// Currently selected backend index: 0 = mock, 1 = HTTP API, 2 = LocalServer, 3 = Agent.
     pub(super) llm_backend_idx: usize,
     /// Active non-blocking LLM task (Some while a request is in-flight).
     pub(super) llm_task: Option<LlmTask>,
@@ -289,85 +289,74 @@ impl TextToolApp {
         }
     }
 
-    /// Sync: save world objects to Design/世界对象.json.
-    pub(super) fn sync_world_objects_to_json(&mut self) {
-        if let Some(root) = &self.project_root {
-            let path = root.join("Design").join("世界对象.json");
-            match serde_json::to_string_pretty(&self.world_objects) {
-                Ok(json) => {
-                    if let Err(e) = std::fs::write(&path, &json) {
-                        self.status = format!("保存世界对象失败: {e}");
-                    } else {
-                        self.status = "世界对象已同步到 Design/世界对象.json".to_owned();
-                    }
-                }
-                Err(e) => self.status = format!("序列化失败: {e}"),
+    /// Write `content` to `<project_root>/<subdir>/<filename>`.
+    /// Sets `self.status` on error or when no project is open.
+    /// Returns `true` on success.
+    fn write_project_file(&mut self, subdir: &str, filename: &str, content: &str) -> bool {
+        if let Some(root) = self.project_root.as_ref() {
+            let path = root.join(subdir).join(filename);
+            if let Err(e) = std::fs::write(&path, content) {
+                self.status = format!("写入 {} 失败: {e}", path.display());
+                return false;
             }
+            true
         } else {
             self.status = "请先打开一个项目".to_owned();
+            false
+        }
+    }
+
+    /// Sync: save world objects to Design/世界对象.json.
+    pub(super) fn sync_world_objects_to_json(&mut self) {
+        match serde_json::to_string_pretty(&self.world_objects) {
+            Ok(json) => {
+                if self.write_project_file("Design", "世界对象.json", &json) {
+                    self.status = "世界对象已同步到 Design/世界对象.json".to_owned();
+                }
+            }
+            Err(e) => self.status = format!("序列化失败: {e}"),
         }
     }
 
     /// Sync: save struct tree to Design/章节结构.json.
     pub(super) fn sync_struct_to_json(&mut self) {
-        if let Some(root) = &self.project_root {
-            let path = root.join("Design").join("章节结构.json");
-            match serde_json::to_string_pretty(&self.struct_roots) {
-                Ok(json) => {
-                    if let Err(e) = std::fs::write(&path, &json) {
-                        self.status = format!("保存章节结构失败: {e}");
-                    } else {
-                        self.status = "章节结构已同步到 Design/章节结构.json".to_owned();
-                    }
+        match serde_json::to_string_pretty(&self.struct_roots) {
+            Ok(json) => {
+                if self.write_project_file("Design", "章节结构.json", &json) {
+                    self.status = "章节结构已同步到 Design/章节结构.json".to_owned();
                 }
-                Err(e) => self.status = format!("序列化失败: {e}"),
             }
-        } else {
-            self.status = "请先打开一个项目".to_owned();
+            Err(e) => self.status = format!("序列化失败: {e}"),
         }
     }
 
     /// Sync: save milestones to Design/里程碑.json.
     pub(super) fn sync_milestones_to_json(&mut self) {
-        if let Some(root) = &self.project_root {
-            let path = root.join("Design").join("里程碑.json");
-            match serde_json::to_string_pretty(&self.milestones) {
-                Ok(json) => {
-                    if let Err(e) = std::fs::write(&path, &json) {
-                        self.status = format!("保存里程碑失败: {e}");
-                    } else {
-                        self.status = "里程碑已同步到 Design/里程碑.json".to_owned();
-                    }
+        match serde_json::to_string_pretty(&self.milestones) {
+            Ok(json) => {
+                if self.write_project_file("Design", "里程碑.json", &json) {
+                    self.status = "里程碑已同步到 Design/里程碑.json".to_owned();
                 }
-                Err(e) => self.status = format!("序列化失败: {e}"),
             }
-        } else {
-            self.status = "请先打开一个项目".to_owned();
+            Err(e) => self.status = format!("序列化失败: {e}"),
         }
     }
 
     /// Sync: save foreshadows to Content/伏笔.md in the project.
     pub(super) fn sync_foreshadows_to_md(&mut self) {
-        if let Some(root) = &self.project_root {
-            let path = root.join("Content").join("伏笔.md");
-            let mut md = String::from("# 伏笔列表\n\n");
-            for fs in &self.foreshadows {
-                let status = if fs.resolved { "✅ 已解决" } else { "⏳ 未解决" };
-                md.push_str(&format!("## {} {}\n\n", fs.name, status));
-                if !fs.description.is_empty() {
-                    md.push_str(&format!("{}\n\n", fs.description));
-                }
-                if !fs.related_chapters.is_empty() {
-                    md.push_str(&format!("**关联章节**: {}\n\n", fs.related_chapters.join("、")));
-                }
+        let mut md = String::from("# 伏笔列表\n\n");
+        for fs in &self.foreshadows {
+            let status = if fs.resolved { "✅ 已解决" } else { "⏳ 未解决" };
+            md.push_str(&format!("## {} {}\n\n", fs.name, status));
+            if !fs.description.is_empty() {
+                md.push_str(&format!("{}\n\n", fs.description));
             }
-            if let Err(e) = std::fs::write(&path, &md) {
-                self.status = format!("保存伏笔失败: {e}");
-            } else {
-                self.status = "伏笔已同步到 Content/伏笔.md".to_owned();
+            if !fs.related_chapters.is_empty() {
+                md.push_str(&format!("**关联章节**: {}\n\n", fs.related_chapters.join("、")));
             }
-        } else {
-            self.status = "请先打开一个项目".to_owned();
+        }
+        if self.write_project_file("Content", "伏笔.md", &md) {
+            self.status = "伏笔已同步到 Content/伏笔.md".to_owned();
         }
     }
 
@@ -443,6 +432,39 @@ impl TextToolApp {
         }
         walk(&self.struct_roots, 0, &mut out);
         out
+    }
+
+    // ── LLM / Agent helpers ───────────────────────────────────────────────────
+
+    /// Snapshot the current project data into a `SkillSet` for the agent backend.
+    pub(super) fn build_skill_set(&self) -> SkillSet {
+        SkillSet::new(
+            self.world_objects.clone(),
+            self.struct_roots.clone(),
+            self.foreshadows.clone(),
+        )
+    }
+
+    /// Construct the `AgentBackend` for the currently-open project.
+    pub(super) fn make_agent_backend(&self) -> AgentBackend {
+        AgentBackend { skills: self.build_skill_set() }
+    }
+
+    /// Return the LLM backend that corresponds to `self.llm_backend_idx`.
+    ///
+    /// | idx | Backend |
+    /// |-----|---------|
+    /// | 0   | `MockBackend` (default / offline) |
+    /// | 1   | `ApiBackend` (Ollama or OpenAI-compat HTTP) |
+    /// | 2   | `LocalServerBackend` (llama.cpp native `/completion`) |
+    /// | 3   | `AgentBackend` (OpenAI tool-calling loop) |
+    pub(super) fn make_llm_backend(&self) -> std::sync::Arc<dyn LlmBackend> {
+        match self.llm_backend_idx {
+            1 => std::sync::Arc::new(ApiBackend),
+            2 => std::sync::Arc::new(LocalServerBackend),
+            3 => std::sync::Arc::new(self.make_agent_backend()),
+            _ => std::sync::Arc::new(MockBackend),
+        }
     }
 
     // ── Tree helpers ──────────────────────────────────────────────────────────

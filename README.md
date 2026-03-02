@@ -137,6 +137,18 @@
 | ✅ 人设对话风格优化 | **完成** | 人物选择器 + `build_dialogue_optimization_prompt()` 自动注入人物特质/背景/关系，一键优化对话 |
 | ✅ 提示词快速模板 | **完成** | 内置「续写正文/扩写场景/优化对话/生成人物简介」四种模板，`PromptTemplate` 可扩展 |
 | ✅ 系统提示词支持 | **完成** | `LlmConfig.system_prompt` 字段，HTTP API 和本地服务器均可配置系统角色 |
+| ✅ API + Skill（Agent）架构 | **完成** | `Skill` trait + 4 内置技能 + `SkillSet` + `AgentBackend`（OpenAI 工具调用循环，最多 5 轮），UI 提供 🤖 Agent 模式切换 |
+
+### 第四阶段里程碑（稳定性与延展层）⏳ 规划中
+
+| 里程碑 | 优先级 | 说明 |
+|--------|--------|------|
+| ⏳ 配置持久化 | 🔴 高 | LLM 配置、界面字体/主题自动保存/恢复到 `~/.config/qingmo/config.json` |
+| ⏳ 反向同步（JSON/MD → 应用状态） | 🔴 高 | 从 `Design/世界对象.json`、`Design/章节结构.json`、`Content/伏笔.md` 恢复图形化界面数据，补齐双向同步缺口 |
+| ⏳ 全文搜索 | 🟡 中 | `Ctrl+Shift+F` 跨项目全文搜索，支持按对象/章节/伏笔/正文过滤，结果高亮跳转 |
+| ⏳ 导出与备份 | 🟡 中 | 一键将项目打包为 ZIP；将章节正文导出为纯文本/Markdown 合集 |
+| ⏳ 拖拽重排 | 🟡 中 | 世界对象卡片和章节节点的拖拽排序（egui DragAndDrop API） |
+| ⏳ Markdown 编辑增强 | 🟢 低 | 字数统计、常用格式快捷键（Ctrl+B 加粗、Ctrl+I 斜体）、代码块语言标注 |
 
 ## 迭代规划
 
@@ -153,10 +165,18 @@
 4. 核心目标：完成小说专属的结构化管理能力。
 
 ### 第三阶段：拓展能力 - LLM辅助层
-1. 接入本地轻量LLM模型（Llama 2 7B/Phi-2）。
-2. 实现结构化补全、人设对话优化功能。
-3. 适配主流云端LLM API（可选）。
-4. 核心目标：完成LLM与结构化文本的联动。
+1. 接入本地轻量LLM模型（llama.cpp HTTP 服务器；Ollama）。
+2. 实现结构化补全、人设对话优化功能（`PromptTemplate` + `build_dialogue_optimization_prompt`）。
+3. 适配主流云端LLM API（OpenAI 兼容格式）。
+4. 引入 **API + Skill (Agent)** 架构：`Skill` trait + 4 内置技能 + `AgentBackend`（工具调用循环）。
+5. 核心目标：完成LLM与结构化文本的联动，LLM 可自主查询项目数据。
+
+### 第四阶段：稳定性与延展层 - 体验完善
+1. **配置持久化**：LLM配置、界面设置自动保存/恢复到本地配置文件。
+2. **反向同步**：从 JSON/MD 文件恢复世界对象、章节结构、伏笔到图形化界面（补齐双向同步缺口）。
+3. **全文搜索**：跨项目全文搜索（Ctrl+Shift+F），支持正文、人设、章节过滤。
+4. **导出与备份**：项目打包为 ZIP，章节导出为纯文本/Markdown 合集。
+5. 核心目标：补齐核心验收标准，提升用户体验稳定性。
 
 ## 核心验收标准
 
@@ -172,16 +192,18 @@
 src/
 ├── main.rs                  # 程序入口
 └── app/
-    ├── mod.rs               # TextToolApp 结构体、核心逻辑（项目/文件/同步操作）及单元测试
-    ├── models.rs            # 数据模型（RelationKind、Character、Chapter、Foreshadow、LlmConfig、Panel 等）
+    ├── mod.rs               # TextToolApp 结构体、核心逻辑（项目/文件/同步/LLM辅助方法）及单元测试
+    ├── models.rs            # 数据模型（RelationKind、WorldObject、StructNode、Foreshadow、LlmConfig、Panel 等）
     ├── file_manager.rs      # 文件系统结构（FileNode、OutlineEntry、OpenFile）及 rfd 文件对话框封装
+    ├── llm_backend.rs       # LLM后端实现（MockBackend、ApiBackend、LocalServerBackend、PromptTemplate、LlmTask）
+    ├── agent.rs             # Agent 架构（Skill trait、4个内置技能、SkillSet、AgentBackend 工具调用循环）
     ├── ui_helpers.rs        # 公共 UI 组件（菜单栏、工具栏、状态栏、新建文件对话框、键盘快捷键）
     └── panel/               # 各功能面板 UI（按面板分组）
         ├── mod.rs           # 声明子模块
         ├── novel.rs         # 小说编辑面板（文件树、双分栏编辑区）
-        ├── characters.rs    # 人设&章节面板（人物列表、章节时间轴）
-        ├── outline.rs       # 大纲&伏笔面板（大纲树、伏笔管理、进度追踪）
-        └── llm.rs           # LLM辅助面板（模型配置、提示词输入、输出展示）
+        ├── characters.rs    # 人设&章节面板（人物列表/卡片视图、关系管理）
+        ├── outline.rs       # 大纲&伏笔面板（大纲树/时间轴视图、伏笔管理、里程碑追踪）
+        └── llm.rs           # LLM辅助面板（模型配置、Agent 模式、提示词模板、对话优化、输出展示）
 ```
 
 ### 为什么选择目录模块而非单文件？

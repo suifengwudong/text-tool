@@ -14,6 +14,7 @@ use super::{LlmConfig, WorldObject, StructNode, Foreshadow};
 /// - Executed synchronously in the background thread via `execute(&args)`.
 /// - Safe to share across threads (`Send + Sync`).
 pub trait Skill: Send + Sync {
+    #[allow(dead_code)]
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     /// JSON Schema object describing the function parameters.
@@ -199,21 +200,26 @@ impl SkillSet {
     ) -> Self {
         SkillSet(vec![
             Arc::new(ListCharactersSkill(objects.clone())),
-            Arc::new(GetCharacterInfoSkill(objects)),
+            Arc::new(GetCharacterInfoSkill(objects.clone())),
             Arc::new(GetChapterOutlineSkill(struct_roots)),
             Arc::new(SearchForeshadowsSkill(foreshadows)),
         ])
     }
 
     /// Number of registered skills.
+    #[allow(dead_code)]
     pub fn len(&self) -> usize { self.0.len() }
 
     /// Returns `true` when no skills are registered.
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool { self.0.is_empty() }
 
     /// Names and descriptions of all skills (for displaying in the UI).
-    pub fn descriptions(&self) -> Vec<(&str, &str)> {
-        self.0.iter().map(|s| (s.name(), s.description())).collect()
+    #[allow(dead_code)]
+    pub fn descriptions(&self) -> Vec<(String, String)> {
+        self.0.iter()
+            .map(|s| (s.name().to_owned(), s.description().to_owned()))
+            .collect()
     }
 
     /// Serialise into the OpenAI `tools` array.
@@ -532,11 +538,11 @@ mod tests {
         let ss = SkillSet::new(vec![], vec![], vec![]);
         let descs = ss.descriptions();
         assert_eq!(descs.len(), 4);
-        let names: Vec<&str> = descs.iter().map(|(n, _)| *n).collect();
-        assert!(names.contains(&"list_characters"));
-        assert!(names.contains(&"get_character_info"));
-        assert!(names.contains(&"get_chapter_outline"));
-        assert!(names.contains(&"search_foreshadows"));
+        let names: Vec<String> = descs.iter().map(|(n, _)| n.clone()).collect();
+        assert!(names.contains(&"list_characters".to_owned()));
+        assert!(names.contains(&"get_character_info".to_owned()));
+        assert!(names.contains(&"get_chapter_outline".to_owned()));
+        assert!(names.contains(&"search_foreshadows".to_owned()));
     }
 
     // ── AgentBackend ──────────────────────────────────────────────────────────

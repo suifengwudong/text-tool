@@ -1,8 +1,5 @@
-use std::sync::Arc;
 use egui::{RichText, Color32};
-use super::super::{
-    TextToolApp, LlmBackend, LlmTask, MockBackend, ApiBackend, LocalServerBackend, PromptTemplate,
-};
+use super::super::{TextToolApp, LlmTask, PromptTemplate};
 
 impl TextToolApp {
     // ── Panel: LLM Assistance ─────────────────────────────────────────────────
@@ -61,6 +58,9 @@ impl TextToolApp {
                     if ui.selectable_label(self.llm_backend_idx == 2, "🖥 本地服务器").clicked() {
                         self.llm_backend_idx = 2;
                     }
+                    if ui.selectable_label(self.llm_backend_idx == 3, "🤖 Agent").clicked() {
+                        self.llm_backend_idx = 3;
+                    }
                 });
                 ui.add_space(4.0);
                 ui.separator();
@@ -113,6 +113,46 @@ impl TextToolApp {
                             .desired_width(f32::INFINITY)
                             .hint_text("例如：你是一个专业的小说编辑，请用中文回复。"));
                     }
+                    3 => {
+                        // ── Agent (tool-calling loop) ──────────────────────────
+                        ui.label(
+                            RichText::new("需要支持工具调用的 OpenAI 兼容 API\n（如 gpt-4o、deepseek-chat）")
+                                .color(Color32::from_rgb(200, 180, 80))
+                                .small(),
+                        );
+                        ui.add_space(4.0);
+                        ui.label("API 地址:");
+                        ui.text_edit_singleline(&mut self.llm_config.api_url)
+                            .on_hover_text("如 https://api.openai.com/v1/chat/completions");
+                        ui.add_space(4.0);
+                        ui.label("模型名称:");
+                        ui.text_edit_singleline(&mut self.llm_config.model_path)
+                            .on_hover_text("如 gpt-4o、deepseek-chat 等");
+                        ui.add_space(6.0);
+                        ui.label("系统提示词 (可选):");
+                        ui.add(egui::TextEdit::multiline(&mut self.llm_config.system_prompt)
+                            .desired_rows(2)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("例如：你是一个专业的小说编辑。"));
+                        ui.add_space(6.0);
+                        ui.separator();
+                        ui.label(RichText::new("当前可用技能:").small()
+                            .color(Color32::from_gray(160)));
+                        // Snapshot skill metadata (static names — no clone of data)
+                        for (name, desc) in &[
+                            ("list_characters",    "列出所有世界对象"),
+                            ("get_character_info", "获取人物/对象详情"),
+                            ("get_chapter_outline","获取章节结构大纲"),
+                            ("search_foreshadows", "搜索伏笔列表"),
+                        ] {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("⚡").small()
+                                    .color(Color32::from_rgb(100, 200, 120)));
+                                ui.label(RichText::new(*name).small().monospace())
+                                    .on_hover_text(*desc);
+                            });
+                        }
+                    }
                     _ => {
                         // ── Mock ───────────────────────────────────────────────
                         ui.label(
@@ -147,13 +187,14 @@ impl TextToolApp {
             ui.separator();
 
             // ── Prompt templates ───────────────────────────────────────────────
+            // Snapshot context once; used only when a template button is clicked.
+            let char_ctx = self.build_character_context();
             ui.label(RichText::new("快速模板:").small().color(Color32::from_gray(160)));
             ui.horizontal_wrapped(|ui| {
                 for tmpl in PromptTemplate::all() {
                     if ui.small_button(tmpl.label()).clicked() {
-                        let ctx_text = self.build_character_context();
                         let current = self.llm_prompt.clone();
-                        self.llm_prompt = tmpl.fill(&ctx_text, &current);
+                        self.llm_prompt = tmpl.fill(&char_ctx, &current);
                         self.status = format!("已应用模板: {}", tmpl.label());
                     }
                 }
@@ -220,16 +261,9 @@ impl TextToolApp {
                         if let Some(prompt) =
                             self.build_dialogue_optimization_prompt(&char_name, &dialogue_text)
                         {
-                            let backend: Arc<dyn LlmBackend> = match self.llm_backend_idx {
-                                1 => Arc::new(ApiBackend),
-                                2 => Arc::new(LocalServerBackend),
-                                _ => Arc::new(MockBackend),
-                            };
-                            self.llm_task = Some(LlmTask::spawn(
-                                backend,
-                                self.llm_config.clone(),
-                                prompt,
-                            ));
+                            let backend = self.make_llm_backend();
+                            let config  = self.llm_config.clone();
+                            self.llm_task = Some(LlmTask::spawn(backend, config, prompt));
                             self.status = format!("正在优化「{}」的对话风格…", char_name);
                         } else {
                             self.status = format!(
@@ -276,16 +310,10 @@ impl TextToolApp {
                     }
                 } else {
                     if ui.button("▶ 调用 LLM 补全").clicked() {
-                        let backend: Arc<dyn LlmBackend> = match self.llm_backend_idx {
-                            1 => Arc::new(ApiBackend),
-                            2 => Arc::new(LocalServerBackend),
-                            _ => Arc::new(MockBackend),
-                        };
-                        self.llm_task = Some(LlmTask::spawn(
-                            backend,
-                            self.llm_config.clone(),
-                            self.llm_prompt.clone(),
-                        ));
+                        let backend = self.make_llm_backend();
+                        let config  = self.llm_config.clone();
+                        let prompt  = self.llm_prompt.clone();
+                        self.llm_task = Some(LlmTask::spawn(backend, config, prompt));
                         self.status = "LLM 调用已提交，后台处理中…".to_owned();
                     }
                     if ui.button("插入到左侧编辑区").clicked() {
@@ -320,16 +348,6 @@ impl TextToolApp {
                     );
                 });
         });
-    }
-}
-
-// Keep a thin `llm_simulate` shim so any existing callers still compile.
-impl TextToolApp {
-    #[allow(dead_code)]
-    pub(in crate::app) fn llm_simulate(&self) -> String {
-        let backend = MockBackend;
-        backend.complete(&self.llm_config, &self.llm_prompt)
-            .unwrap_or_else(|e| e)
     }
 }
 
