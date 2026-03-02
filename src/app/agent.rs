@@ -2,7 +2,7 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use super::llm_backend::LlmBackend;
-use super::{LlmConfig, WorldObject, StructNode, Foreshadow};
+use super::{LlmConfig, WorldObject, StructNode, Foreshadow, Milestone};
 
 // ── Skill trait ───────────────────────────────────────────────────────────────
 
@@ -185,6 +185,135 @@ impl Skill for SearchForeshadowsSkill {
     }
 }
 
+// ── GetMilestoneStatusSkill ───────────────────────────────────────────────────
+
+/// List all project milestones with their completion status.
+pub struct GetMilestoneStatusSkill(pub Vec<Milestone>);
+
+impl Skill for GetMilestoneStatusSkill {
+    fn name(&self) -> &str { "get_milestone_status" }
+
+    fn description(&self) -> &str {
+        "获取小说项目的所有里程碑及其完成状态"
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({ "type": "object", "properties": {} })
+    }
+
+    fn execute(&self, _args: &Value) -> Result<Value, String> {
+        let list: Vec<Value> = self.0.iter().map(|m| {
+            serde_json::json!({
+                "name":        m.name,
+                "description": m.description,
+                "completed":   m.completed,
+            })
+        }).collect();
+        Ok(Value::Array(list))
+    }
+}
+
+// ── ListProjectFilesSkill ─────────────────────────────────────────────────────
+
+/// List all `.md` and `.json` files in the project directory.
+pub struct ListProjectFilesSkill(pub Option<std::path::PathBuf>);
+
+impl Skill for ListProjectFilesSkill {
+    fn name(&self) -> &str { "list_project_files" }
+
+    fn description(&self) -> &str {
+        "列出项目中的所有 Markdown（.md/.markdown）、JSON 和 TXT 文件（相对路径）"
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({ "type": "object", "properties": {} })
+    }
+
+    fn execute(&self, _args: &Value) -> Result<Value, String> {
+        let root = self.0.as_ref().ok_or("项目未打开")?;
+        let mut files = Vec::new();
+        collect_text_files(root, root, &mut files);
+        Ok(Value::Array(files.into_iter().map(|s| Value::String(s)).collect()))
+    }
+}
+
+fn collect_text_files(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let mut sorted: Vec<_> = entries.filter_map(|e| e.ok()).collect();
+    sorted.sort_by_key(|e| e.file_name());
+    for entry in sorted {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_text_files(root, &path, out);
+        } else if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            if matches!(ext, "md" | "markdown" | "json") {
+                if let Ok(rel) = path.strip_prefix(root) {
+                    out.push(rel.to_string_lossy().into_owned());
+                }
+            }
+        }
+    }
+}
+
+// ── GetFileContentSkill ───────────────────────────────────────────────────────
+
+/// Read the full content of a project file by its relative path.
+pub struct GetFileContentSkill(pub Option<std::path::PathBuf>);
+
+impl Skill for GetFileContentSkill {
+    fn name(&self) -> &str { "get_file_content" }
+
+    fn description(&self) -> &str {
+        "读取项目中指定文件的完整内容；path 为相对于项目根目录的路径（如 Content/第一章.md）；支持 .md / .markdown / .json / .txt 文件"
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "相对于项目根目录的文件路径"
+                }
+            },
+            "required": ["path"]
+        })
+    }
+
+    fn execute(&self, args: &Value) -> Result<Value, String> {
+        let rel = args.get("path")
+            .and_then(|v| v.as_str())
+            .ok_or("缺少参数 path")?;
+
+        let root = self.0.as_ref().ok_or("项目未打开")?;
+
+        // Prevent directory traversal outside the project root.
+        let candidate = root.join(rel);
+        let canonical_root = std::fs::canonicalize(root)
+            .map_err(|e| format!("无法解析项目路径: {e}"))?;
+        let canonical_file = std::fs::canonicalize(&candidate)
+            .map_err(|e| format!("文件不存在或无法访问: {e}"))?;
+        if !canonical_file.starts_with(&canonical_root) {
+            return Err("拒绝访问项目目录之外的文件".to_owned());
+        }
+
+        // Only allow text files.
+        let ext = candidate.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if !matches!(ext, "md" | "markdown" | "json" | "txt") {
+            return Err("仅支持读取 .md / .json / .txt 文件".to_owned());
+        }
+
+        let content = std::fs::read_to_string(&canonical_file)
+            .map_err(|e| format!("读取失败: {e}"))?;
+
+        Ok(serde_json::json!({
+            "path":    rel,
+            "content": content,
+            "length":  content.chars().count(),
+        }))
+    }
+}
+
 // ── SkillSet ──────────────────────────────────────────────────────────────────
 
 /// A collection of skills made available to the agent.
@@ -193,15 +322,20 @@ pub struct SkillSet(Vec<Arc<dyn Skill>>);
 impl SkillSet {
     /// Build the default skill set from a snapshot of the current app data.
     pub fn new(
-        objects:     Vec<WorldObject>,
+        objects:      Vec<WorldObject>,
         struct_roots: Vec<StructNode>,
-        foreshadows: Vec<Foreshadow>,
+        foreshadows:  Vec<Foreshadow>,
+        milestones:   Vec<Milestone>,
+        project_root: Option<std::path::PathBuf>,
     ) -> Self {
         SkillSet(vec![
             Arc::new(ListCharactersSkill(objects.clone())),
             Arc::new(GetCharacterInfoSkill(objects.clone())),
             Arc::new(GetChapterOutlineSkill(struct_roots)),
             Arc::new(SearchForeshadowsSkill(foreshadows)),
+            Arc::new(GetMilestoneStatusSkill(milestones)),
+            Arc::new(ListProjectFilesSkill(project_root.clone())),
+            Arc::new(GetFileContentSkill(project_root)),
         ])
     }
 
@@ -400,8 +534,6 @@ impl LlmBackend for AgentBackend {
     }
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -435,6 +567,19 @@ mod tests {
         f.description = "第一章出现的信封".to_owned();
         f.related_chapters = vec!["第一章".to_owned(), "第三章".to_owned()];
         vec![f, Foreshadow::new("断剑")]
+    }
+
+    fn sample_milestones() -> Vec<Milestone> {
+        let mut m1 = Milestone::new("完成第一章");
+        m1.completed = true;
+        m1.description = "第一章草稿".to_owned();
+        let m2 = Milestone::new("完成第二章");
+        vec![m1, m2]
+    }
+
+    fn make_skill_set() -> SkillSet {
+        SkillSet::new(sample_objects(), sample_roots(), sample_foreshadows(),
+                      sample_milestones(), None)
     }
 
     // ── Skill: list_characters ─────────────────────────────────────────────────
@@ -528,20 +673,20 @@ mod tests {
 
     #[test]
     fn test_skill_set_len() {
-        let ss = SkillSet::new(sample_objects(), sample_roots(), sample_foreshadows());
-        assert_eq!(ss.len(), 4);
+        let ss = make_skill_set();
+        assert_eq!(ss.len(), 7);
     }
 
     #[test]
     fn test_skill_set_execute_known() {
-        let ss = SkillSet::new(sample_objects(), sample_roots(), sample_foreshadows());
+        let ss = make_skill_set();
         let r = ss.execute("list_characters", &serde_json::json!({})).unwrap();
         assert_eq!(r.as_array().unwrap().len(), 2);
     }
 
     #[test]
     fn test_skill_set_execute_unknown() {
-        let ss = SkillSet::new(sample_objects(), sample_roots(), sample_foreshadows());
+        let ss = make_skill_set();
         let r = ss.execute("nonexistent_skill", &serde_json::json!({}));
         assert!(r.is_err());
         assert!(r.unwrap_err().contains("未知技能"));
@@ -559,32 +704,125 @@ mod tests {
 
     #[test]
     fn test_skill_set_to_openai_tools() {
-        let ss = SkillSet::new(vec![], vec![], vec![]);
+        let ss = SkillSet::new(vec![], vec![], vec![], vec![], None);
         let tools = ss.to_openai_tools();
-        assert_eq!(tools.as_array().unwrap().len(), 4);
+        assert_eq!(tools.as_array().unwrap().len(), 7);
     }
 
     #[test]
     fn test_skill_set_tool_names() {
-        let ss = SkillSet::new(vec![], vec![], vec![]);
+        let ss = SkillSet::new(vec![], vec![], vec![], vec![], None);
         let names = ss.tool_names();
-        assert_eq!(names.len(), 4);
+        assert_eq!(names.len(), 7);
         assert!(names.contains(&"list_characters"));
         assert!(names.contains(&"get_character_info"));
         assert!(names.contains(&"get_chapter_outline"));
         assert!(names.contains(&"search_foreshadows"));
+        assert!(names.contains(&"get_milestone_status"));
+        assert!(names.contains(&"list_project_files"));
+        assert!(names.contains(&"get_file_content"));
     }
 
     #[test]
     fn test_skill_descriptions() {
-        let ss = SkillSet::new(vec![], vec![], vec![]);
+        let ss = SkillSet::new(vec![], vec![], vec![], vec![], None);
         let descs = ss.descriptions();
-        assert_eq!(descs.len(), 4);
+        assert_eq!(descs.len(), 7);
         let names: Vec<String> = descs.iter().map(|(n, _)| n.clone()).collect();
         assert!(names.contains(&"list_characters".to_owned()));
         assert!(names.contains(&"get_character_info".to_owned()));
         assert!(names.contains(&"get_chapter_outline".to_owned()));
         assert!(names.contains(&"search_foreshadows".to_owned()));
+        assert!(names.contains(&"get_milestone_status".to_owned()));
+        assert!(names.contains(&"list_project_files".to_owned()));
+        assert!(names.contains(&"get_file_content".to_owned()));
+    }
+
+    // ── Skill: get_milestone_status ───────────────────────────────────────────
+
+    #[test]
+    fn test_get_milestone_status_skill() {
+        let skill = GetMilestoneStatusSkill(sample_milestones());
+        let result = skill.execute(&serde_json::json!({})).unwrap();
+        let arr = result.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["name"], "完成第一章");
+        assert_eq!(arr[0]["completed"], true);
+        assert_eq!(arr[1]["name"], "完成第二章");
+        assert_eq!(arr[1]["completed"], false);
+    }
+
+    // ── Skill: list_project_files ─────────────────────────────────────────────
+
+    #[test]
+    fn test_list_project_files_no_project() {
+        let skill = ListProjectFilesSkill(None);
+        let result = skill.execute(&serde_json::json!({}));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("项目未打开"));
+    }
+
+    #[test]
+    fn test_list_project_files_with_project() {
+        let dir = std::env::temp_dir().join("qingmo_test_list_files");
+        std::fs::create_dir_all(dir.join("Content")).unwrap();
+        std::fs::write(dir.join("Content").join("ch1.md"), "hello").unwrap();
+        std::fs::write(dir.join("Content").join("data.json"), "{}").unwrap();
+
+        let skill = ListProjectFilesSkill(Some(dir.clone()));
+        let result = skill.execute(&serde_json::json!({})).unwrap();
+        let arr = result.as_array().unwrap();
+        let names: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
+        assert!(names.iter().any(|s| s.contains("ch1.md")));
+        assert!(names.iter().any(|s| s.contains("data.json")));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── Skill: get_file_content ───────────────────────────────────────────────
+
+    #[test]
+    fn test_get_file_content_no_project() {
+        let skill = GetFileContentSkill(None);
+        let result = skill.execute(&serde_json::json!({"path": "Content/test.md"}));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("项目未打开"));
+    }
+
+    #[test]
+    fn test_get_file_content_reads_file() {
+        let dir = std::env::temp_dir().join("qingmo_test_get_content");
+        std::fs::create_dir_all(dir.join("Content")).unwrap();
+        std::fs::write(dir.join("Content").join("story.md"), "# 故事\n\n正文内容").unwrap();
+
+        let skill = GetFileContentSkill(Some(dir.clone()));
+        let result = skill.execute(&serde_json::json!({"path": "Content/story.md"})).unwrap();
+        assert_eq!(result["path"], "Content/story.md");
+        assert!(result["content"].as_str().unwrap().contains("正文内容"));
+        assert!(result["length"].as_u64().unwrap() > 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_get_file_content_missing_param() {
+        let skill = GetFileContentSkill(Some(std::env::temp_dir()));
+        let result = skill.execute(&serde_json::json!({}));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("缺少参数"));
+    }
+
+    #[test]
+    fn test_get_file_content_rejects_path_traversal() {
+        let dir = std::env::temp_dir().join("qingmo_test_traversal");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let skill = GetFileContentSkill(Some(dir.clone()));
+        let result = skill.execute(&serde_json::json!({"path": "../../etc/passwd"}));
+        // Should fail – either "file not found" or "directory traversal" rejection
+        assert!(result.is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ── AgentBackend ──────────────────────────────────────────────────────────
@@ -592,7 +830,7 @@ mod tests {
     #[test]
     fn test_agent_backend_name() {
         let agent = AgentBackend {
-            skills: SkillSet::new(vec![], vec![], vec![]),
+            skills: SkillSet::new(vec![], vec![], vec![], vec![], None),
         };
         assert_eq!(agent.name(), AgentBackend::BACKEND_NAME);
         assert_eq!(agent.name(), "Agent (工具调用)");

@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 /// Returns the home directory, checking platform-appropriate env vars.
 fn dirs_home() -> Option<PathBuf> {
@@ -8,6 +9,35 @@ fn dirs_home() -> Option<PathBuf> {
     { std::env::var_os("USERPROFILE").map(PathBuf::from) }
     #[cfg(not(target_os = "windows"))]
     { std::env::var_os("HOME").map(PathBuf::from) }
+}
+
+/// Return a local-time-like HH:MM:SS string for display in the status bar.
+///
+/// We derive hours/minutes/seconds from the local timezone offset by reading
+/// the `TZ` environment variable offset (best-effort). If the offset cannot
+/// be determined we fall back to showing elapsed seconds since epoch mod 86400,
+/// which gives the correct value for UTC+0 and is always monotonically correct
+/// within a day.  No external crate is needed.
+fn chrono_label() -> String {
+    // Best-effort local-time from SystemTime + timezone env var.
+    let utc_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
+    // Read TZ offset hours from env (e.g. "Asia/Shanghai" won't parse but
+    // "UTC+8" or "+0800" style vars might be set via TZOFFSET).
+    let offset_secs: i64 = std::env::var("TZOFFSET")
+        .ok()
+        .and_then(|s| s.parse::<i64>().ok())
+        .map(|h| h * 3600)
+        .unwrap_or(0);
+
+    let local = (utc_secs + offset_secs).rem_euclid(86400);
+    let hh = local / 3600;
+    let mm = (local % 3600) / 60;
+    let ss = local % 60;
+    format!("{hh:02}:{mm:02}:{ss:02}")
 }
 
 mod models;
@@ -50,6 +80,11 @@ pub struct TextToolApp {
 
     // New file dialog
     pub(super) new_file_dialog: Option<NewFileDialog>,
+
+    // Rename file dialog
+    pub(super) rename_dialog: Option<RenameDialog>,
+    /// Currently selected file path in the navigation tree (used for F2 rename).
+    pub(super) selected_file_path: Option<PathBuf>,
 
     // ── World Objects (Panel::Objects) ────────────────────────────────────────
     pub(super) world_objects: Vec<WorldObject>,
@@ -110,6 +145,19 @@ pub struct TextToolApp {
     pub(super) md_settings: MarkdownSettings,
     pub(super) show_settings_window: bool,
 
+    // ── Theme ─────────────────────────────────────────────────────────────────
+    pub(super) theme: AppTheme,
+
+    // ── Auto-save ─────────────────────────────────────────────────────────────
+    /// When the last auto-save ran (None = not yet started this session).
+    pub(super) last_auto_save: Option<Instant>,
+    /// Human-readable HH:MM:SS of last auto-save shown in the status bar.
+    pub(super) last_auto_save_label: String,
+
+    // ── Delete confirmation ────────────────────────────────────────────────────
+    /// File path pending deletion (move to 废稿) — shown in confirm dialog.
+    pub(super) delete_confirm_path: Option<PathBuf>,
+
     // ── Config persistence ────────────────────────────────────────────────────
     pub(super) last_project: Option<PathBuf>,
     /// Auto-load world objects / struct / foreshadows / milestones from files when opening project.
@@ -125,6 +173,12 @@ pub struct TextToolApp {
 pub(super) struct NewFileDialog {
     pub(super) name: String,
     pub(super) dir: PathBuf,
+}
+
+#[derive(Debug)]
+pub(super) struct RenameDialog {
+    pub(super) path: PathBuf,
+    pub(super) new_name: String,
 }
 
 impl TextToolApp {
@@ -150,6 +204,8 @@ impl TextToolApp {
             last_focused_left: true,
             status: "欢迎使用 Text Tool".to_owned(),
             new_file_dialog: None,
+            rename_dialog: None,
+            selected_file_path: None,
             world_objects: vec![],
             selected_obj_idx: None,
             new_obj_name: String::new(),
@@ -183,7 +239,7 @@ impl TextToolApp {
             new_ms_name: String::new(),
             obj_view_mode: ObjectViewMode::List,
             struct_view_mode: StructViewMode::Tree,
-            file_tree_mode: FileTreeMode::Files,
+            file_tree_mode: FileTreeMode::Chapters,
             llm_config: LlmConfig {
                 model_path: String::new(),
                 api_url: "http://localhost:11434/api/generate".to_owned(),
@@ -200,6 +256,10 @@ impl TextToolApp {
             left_preview_mode: false,
             md_settings: MarkdownSettings::default(),
             show_settings_window: false,
+            theme: AppTheme::Dark,
+            last_auto_save: None,
+            last_auto_save_label: String::new(),
+            delete_confirm_path: None,
             last_project: None,
             auto_load_from_files: false,
             show_search: false,
@@ -212,6 +272,7 @@ impl TextToolApp {
             app.llm_config = cfg.llm_config;
             app.md_settings = cfg.md_settings;
             app.auto_load_from_files = cfg.auto_load;
+            app.theme = cfg.theme;
             if let Some(p) = cfg.last_project {
                 let pb = PathBuf::from(p);
                 if pb.is_dir() {
@@ -385,14 +446,92 @@ impl TextToolApp {
         out
     }
 
-    // ── LLM / Agent helpers ───────────────────────────────────────────────────
+    /// Rename a file or directory on disk and update open editor paths.
+    pub(super) fn rename_file(&mut self, old_path: &std::path::Path, new_name: &str) {
+        let new_name = new_name.trim();
+        if new_name.is_empty() { return; }
+        if let Some(parent) = old_path.parent() {
+            let new_path = parent.join(new_name);
+            if let Err(e) = std::fs::rename(old_path, &new_path) {
+                self.status = format!("重命名失败: {e}");
+                return;
+            }
+            // Update open file references if needed
+            if let Some(f) = &mut self.left_file {
+                if f.path == old_path { f.path = new_path.clone(); }
+            }
+            if let Some(f) = &mut self.right_file {
+                if f.path == old_path { f.path = new_path.clone(); }
+            }
+            if self.selected_file_path.as_deref() == Some(old_path) {
+                self.selected_file_path = Some(new_path);
+            }
+            self.refresh_tree();
+            self.status = format!("已重命名: {}", new_name);
+        }
+    }    /// Move `path` into the project's `废稿/` folder.
+    /// Creates `废稿/` if it doesn't exist. Appends a numeric suffix if a
+    /// file with the same name already exists there.
+    pub(super) fn move_to_trash(&mut self, path: &Path) {
+        let Some(root) = self.project_root.clone() else {
+            self.status = "无法删除：未打开项目".to_owned();
+            return;
+        };
+        let trash_dir = root.join("废稿");
+        if let Err(e) = std::fs::create_dir_all(&trash_dir) {
+            self.status = format!("无法创建废稿文件夹: {e}");
+            return;
+        }
+        let file_name = path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "unknown".to_owned());
 
-    /// Snapshot the current project data into a `SkillSet` for the agent backend.
+        // Resolve collision by appending _1, _2, … before the extension.
+        let dest = {
+            let stem = Path::new(&file_name).file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| file_name.clone());
+            let ext  = Path::new(&file_name).extension()
+                .map(|e| format!(".{}", e.to_string_lossy()))
+                .unwrap_or_default();
+            let mut candidate = trash_dir.join(&file_name);
+            let mut idx = 1u32;
+            while candidate.exists() {
+                candidate = trash_dir.join(format!("{stem}_{idx}{ext}"));
+                idx += 1;
+            }
+            candidate
+        };
+
+        // Close the file if it's currently open in an editor pane.
+        if self.left_file.as_ref().map(|f| f.path.as_path()) == Some(path) {
+            self.left_file = None;
+        }
+        if self.right_file.as_ref().map(|f| f.path.as_path()) == Some(path) {
+            self.right_file = None;
+        }
+        if self.selected_file_path.as_deref() == Some(path) {
+            self.selected_file_path = None;
+        }
+
+        if let Err(e) = std::fs::rename(path, &dest) {
+            self.status = format!("移动失败: {e}");
+        } else {
+            let dest_name = dest.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            self.status = format!("已移入废稿: {dest_name}");
+            self.refresh_tree();
+        }
+    }
+
     pub(super) fn build_skill_set(&self) -> SkillSet {
         SkillSet::new(
             self.world_objects.clone(),
             self.struct_roots.clone(),
             self.foreshadows.clone(),
+            self.milestones.clone(),
+            self.project_root.clone(),
         )
     }
 
@@ -456,6 +595,7 @@ impl TextToolApp {
             md_settings: self.md_settings.clone(),
             last_project: self.last_project.as_ref().map(|p| p.to_string_lossy().into_owned()),
             auto_load: self.auto_load_from_files,
+            theme: self.theme,
         };
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -477,8 +617,44 @@ impl TextToolApp {
 
 impl eframe::App for TextToolApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Apply theme every frame (cheap: egui diffs visuals internally)
+        ctx.set_visuals(match self.theme {
+            AppTheme::Dark  => egui::Visuals::dark(),
+            AppTheme::Light => egui::Visuals::light(),
+        });
+
         // Keyboard shortcuts (checked before UI to avoid conflicts)
         self.handle_keyboard(ctx);
+
+        // ── Auto-save tick ────────────────────────────────────────────────────
+        if self.md_settings.auto_save_interval_secs > 0 {
+            let interval = self.md_settings.auto_save_interval_secs as u64;
+            let should_save = match self.last_auto_save {
+                None => false, // don't save on the very first frame
+                Some(last) => last.elapsed().as_secs() >= interval,
+            };
+            if should_save {
+                let mut saved_any = false;
+                if let Some(f) = &mut self.left_file {
+                    if f.modified && f.save().is_ok() { saved_any = true; }
+                }
+                if let Some(f) = &mut self.right_file {
+                    if f.modified && f.save().is_ok() { saved_any = true; }
+                }
+                self.last_auto_save = Some(Instant::now());
+                if saved_any {
+                    // Record elapsed time since session start as a human-readable label.
+                    // (We avoid a UTC clock to sidestep timezone issues without a date library.)
+                    self.last_auto_save_label = chrono_label();
+                }
+            }
+            // Start the clock after the first frame so the user gets a full interval.
+            if self.last_auto_save.is_none() {
+                self.last_auto_save = Some(Instant::now());
+            }
+            // Request a repaint so we check again after the interval.
+            ctx.request_repaint_after(std::time::Duration::from_secs(interval));
+        }
 
         // UI layers always visible
         self.draw_menu_bar(ctx);
@@ -504,6 +680,8 @@ impl eframe::App for TextToolApp {
 
         // Dialogs
         self.draw_new_file_dialog(ctx);
+        self.draw_rename_dialog(ctx);
+        self.draw_delete_confirm_dialog(ctx);
         self.draw_settings_window(ctx);
         self.draw_search_window(ctx);
     }
@@ -881,6 +1059,7 @@ mod tests {
             },
             last_project: Some("/home/user/my_novel".to_owned()),
             auto_load: true,
+            theme: AppTheme::Dark,
         };
         let json = serde_json::to_string_pretty(&cfg).unwrap();
         let d: AppConfig = serde_json::from_str(&json).unwrap();
@@ -1003,6 +1182,8 @@ mod tests {
         assert!(s.hide_json);
         assert_eq!(s.tab_size, 2);
         assert!(!s.auto_extract_structure);
+        assert!((s.editor_font_size - 13.0).abs() < 1e-5);
+        assert_eq!(s.auto_save_interval_secs, 60);
     }
 
     #[test]
@@ -1012,6 +1193,17 @@ mod tests {
         let s: MarkdownSettings = serde_json::from_str(old_json).unwrap();
         assert!(s.hide_json);        // should default to true
         assert_eq!(s.tab_size, 2);   // should default to 2
+        assert!((s.editor_font_size - 13.0).abs() < 1e-5); // should default to 13.0
+    }
+
+    #[test]
+    fn test_app_theme_default() {
+        let cfg: AppConfig = serde_json::from_str(
+            r#"{"llm_config":{"model_path":"","api_url":"","temperature":0.7,"max_tokens":512,"use_local":true,"system_prompt":""},
+                "md_settings":{"preview_font_size":14.0,"default_to_preview":false},
+                "last_project":null,"auto_load":false}"#
+        ).unwrap();
+        assert_eq!(cfg.theme, AppTheme::Dark); // serde default
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
-use egui::{Context, RichText, Color32};
-use super::super::{TextToolApp, FileNode, StructNode, FileTreeMode, rfd_pick_folder};
+use egui::{Context, RichText, Color32, Key};
+use super::super::{TextToolApp, FileNode, StructNode, FileTreeMode, Panel, rfd_pick_folder};
 use super::markdown::render_markdown;
 
 impl TextToolApp {
@@ -10,6 +10,10 @@ impl TextToolApp {
         let mut open_left: Option<PathBuf> = None;
         let mut open_right: Option<PathBuf> = None;
         let mut new_in: Option<PathBuf> = None;
+        let mut toggle_path: Option<PathBuf> = None;
+        let mut select_path: Option<PathBuf> = None;
+        let mut rename_path: Option<PathBuf> = None;
+        let mut delete_path: Option<PathBuf> = None;
 
         egui::SidePanel::left("file_tree")
             .resizable(true)
@@ -63,15 +67,25 @@ impl TextToolApp {
                             }
                         }
                     });
+                    // F2 hint when a file is selected
+                    if self.selected_file_path.is_some() && self.file_tree_mode == FileTreeMode::Files {
+                        ui.label(
+                            RichText::new("F2 重命名选中文件")
+                                .small().color(Color32::from_gray(120)),
+                        );
+                    }
                     ui.separator();
 
                     egui::ScrollArea::vertical().id_salt("file_tree_scroll").show(ui, |ui| {
                         if self.file_tree_mode == FileTreeMode::Files {
                             let nodes = self.file_tree.clone();
+                            let selected = &self.selected_file_path;
                             for node in &nodes {
                                 Self::draw_tree_node(
                                     ui, node, 0,
                                     &mut open_left, &mut open_right, &mut new_in,
+                                    &mut toggle_path, selected, &mut select_path,
+                                    &mut rename_path, &mut delete_path,
                                 );
                             }
                         } else {
@@ -110,6 +124,42 @@ impl TextToolApp {
         if let Some(p) = new_in {
             self.new_file(p);
         }
+        if let Some(p) = toggle_path {
+            Self::toggle_expand_in_tree(&mut self.file_tree, &p);
+        }
+        if let Some(p) = select_path {
+            self.selected_file_path = Some(p);
+        }
+        if let Some(p) = rename_path {
+            let current_name = p.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            self.selected_file_path = Some(p.clone());
+            self.rename_dialog = Some(crate::app::RenameDialog {
+                path: p,
+                new_name: current_name,
+            });
+        }
+        // Open delete confirmation dialog (deferred to avoid borrow conflict)
+        if let Some(p) = delete_path {
+            self.delete_confirm_path = Some(p);
+        }
+
+        // Handle F2 key: open rename dialog for selected file when panel is focused
+        if self.rename_dialog.is_none() {
+            let f2 = ctx.input(|i| !i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(Key::F2));
+            if f2 {
+                if let Some(path) = self.selected_file_path.clone() {
+                    let current_name = path.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    self.rename_dialog = Some(crate::app::RenameDialog {
+                        path,
+                        new_name: current_name,
+                    });
+                }
+            }
+        }
     }
 
     /// Render the chapter structure tree. Clicking a leaf chapter opens its `.md` file.
@@ -120,28 +170,18 @@ impl TextToolApp {
         open_left: &mut Option<PathBuf>,
         project_root: &Option<std::path::PathBuf>,
     ) {
-        for node in nodes {
-            let indent = depth as f32 * 14.0;
-            let has_children = !node.children.is_empty();
+        for (idx, node) in nodes.iter().enumerate() {
             let done_mark = if node.done { "✅ " } else { "" };
             let label = format!("{} {}{}", node.kind.icon(), done_mark, node.title);
 
-            ui.horizontal(|ui| {
-                ui.add_space(indent);
-                if has_children {
-                    // Branch node: show as non-clickable label in muted color
-                    ui.label(
-                        RichText::new(&label)
-                            .color(Color32::from_gray(200))
-                            .strong(),
-                    );
-                } else {
-                    // Leaf node: clickable, tries to open the corresponding .md
+            if node.children.is_empty() {
+                // Leaf node: clickable, tries to open the corresponding .md
+                ui.horizontal(|ui| {
+                    ui.add_space(depth as f32 * 14.0);
                     let resp = ui.selectable_label(false,
                         RichText::new(&label).color(Color32::from_gray(230))
                     );
                     if resp.clicked() || resp.double_clicked() {
-                        // Look for matching .md file in Content/
                         if let Some(root) = project_root {
                             let needle = node.title.to_lowercase();
                             if let Some(path) = find_md_for_title(&root.join("Content"), &needle) {
@@ -154,11 +194,17 @@ impl TextToolApp {
                     } else {
                         node.summary.clone()
                     });
-                }
-            });
-
-            if has_children {
-                Self::draw_chapter_tree(ui, &node.children, depth + 1, open_left, project_root);
+                });
+            } else {
+                // Branch node: collapsible header (provides its own indentation)
+                egui::CollapsingHeader::new(
+                    RichText::new(&label).color(Color32::from_gray(200)).strong()
+                )
+                .id_salt(format!("ch_tree_{}_{}", depth, idx))
+                .default_open(true)
+                .show(ui, |ui| {
+                    Self::draw_chapter_tree(ui, &node.children, depth + 1, open_left, project_root);
+                });
             }
         }
     }
@@ -170,13 +216,25 @@ impl TextToolApp {
         open_left: &mut Option<PathBuf>,
         open_right: &mut Option<PathBuf>,
         new_in: &mut Option<PathBuf>,
+        toggle_path: &mut Option<PathBuf>,
+        selected_path: &Option<PathBuf>,
+        select_path: &mut Option<PathBuf>,
+        rename_path: &mut Option<PathBuf>,
+        delete_path: &mut Option<PathBuf>,
     ) {
         let indent = depth as f32 * 12.0;
         ui.horizontal(|ui| {
             ui.add_space(indent);
             if node.is_dir {
                 let icon = if node.expanded { "▼" } else { "▶" };
-                ui.label(format!("{icon} 📁 {}", node.name));
+                let resp = ui.selectable_label(
+                    false,
+                    format!("{icon} 📁 {}", node.name),
+                );
+                if resp.clicked() {
+                    *toggle_path = Some(node.path.clone());
+                }
+                resp.on_hover_text(if node.expanded { "点击折叠" } else { "点击展开" });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.small_button("➕").on_hover_text("新建文件").clicked() {
                         *new_in = Some(node.path.clone());
@@ -190,47 +248,159 @@ impl TextToolApp {
                 } else {
                     "📃"
                 };
-                let resp = ui.selectable_label(false, format!("{icon} {}", node.name));
+                let is_selected = selected_path.as_deref() == Some(node.path.as_path());
+                let resp = ui.selectable_label(is_selected, format!("{icon} {}", node.name));
                 resp.context_menu(|ui| {
-                    if ui.button("在左侧打开").clicked() {
+                    if ui.button("打开 / 在左侧打开").clicked() {
                         *open_left = Some(node.path.clone());
                         ui.close_menu();
                     }
-                    if ui.button("在右侧打开").clicked() {
-                        *open_right = Some(node.path.clone());
+                    ui.separator();
+                    if ui.button("重命名 (F2)").clicked() {
+                        *rename_path = Some(node.path.clone());
+                        ui.close_menu();
+                    }
+                    if ui.button("🗑 删除 (移入废稿)").clicked() {
+                        *delete_path = Some(node.path.clone());
                         ui.close_menu();
                     }
                 });
-                if resp.double_clicked() {
-                    // default: md → left, json → right
-                    if node.name.ends_with(".json") {
-                        *open_right = Some(node.path.clone());
-                    } else {
-                        *open_left = Some(node.path.clone());
-                    }
+                if resp.clicked() {
+                    *select_path = Some(node.path.clone());
                 }
-                resp.on_hover_text("双击打开 / 右键菜单");
+                if resp.double_clicked() {
+                    // All files open in the left (main) editor
+                    *open_left = Some(node.path.clone());
+                }
+                resp.on_hover_text("单击选中  双击打开  右键菜单");
             }
         });
 
         if node.is_dir && node.expanded {
             for child in &node.children {
-                Self::draw_tree_node(ui, child, depth + 1, open_left, open_right, new_in);
+                Self::draw_tree_node(ui, child, depth + 1, open_left, open_right, new_in,
+                    toggle_path, selected_path, select_path, rename_path, delete_path);
             }
         }
+    }
+
+    /// Toggle the `expanded` flag of the tree node matching `path`.
+    pub(in crate::app) fn toggle_expand_in_tree(nodes: &mut Vec<FileNode>, path: &std::path::Path) -> bool {
+        for node in nodes.iter_mut() {
+            if node.path == path {
+                node.expanded = !node.expanded;
+                return true;
+            }
+            if node.is_dir && Self::toggle_expand_in_tree(&mut node.children, path) {
+                return true;
+            }
+        }
+        false
     }
 
     pub(in crate::app) fn draw_editors(&mut self, ctx: &Context) {
         let mut do_extract_struct = false;
         let mut do_sync_folders   = false;
+        let mut switch_to_obj_idx: Option<usize> = None;
 
+        // ── Right sidebar: world-object reference cards ───────────────────────
+        // Snapshot non-mutable data before any borrow of `self`.
+        let objects_snapshot: Vec<_> = self.world_objects.iter().enumerate()
+            .map(|(i, o)| (i, o.icon(), o.name.clone(), o.kind.label(), o.description.clone(), o.links.len()))
+            .collect();
+        let selected_obj = self.selected_obj_idx;
+
+        egui::SidePanel::right("obj_ref_sidebar")
+            .resizable(true)
+            .default_width(190.0)
+            .min_width(120.0)
+            .max_width(300.0)
+            .show(ctx, |ui| {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.heading("对象参考");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("⊞").on_hover_text("在「世界对象」面板管理").clicked() {
+                            switch_to_obj_idx = selected_obj; // keep selection, just switch panel
+                        }
+                    });
+                });
+                ui.separator();
+
+                if objects_snapshot.is_empty() {
+                    ui.label(
+                        RichText::new("暂无对象\n请在「世界对象」面板添加")
+                            .small().color(Color32::GRAY),
+                    );
+                } else {
+                    egui::ScrollArea::vertical().id_salt("obj_ref_scroll").show(ui, |ui| {
+                        for (i, icon, name, kind, desc, link_count) in &objects_snapshot {
+                            let is_sel = selected_obj == Some(*i);
+                            let bg = if is_sel {
+                                Color32::from_rgb(0, 70, 130)
+                            } else {
+                                Color32::from_gray(36)
+                            };
+                            let card = egui::Frame::none()
+                                .fill(bg)
+                                .rounding(5.0)
+                                .inner_margin(egui::Margin::symmetric(7.0, 5.0))
+                                .show(ui, |ui| {
+                                    ui.set_min_width(ui.available_width());
+                                    ui.horizontal(|ui| {
+                                        ui.label(RichText::new(*icon).size(16.0));
+                                        ui.vertical(|ui| {
+                                            ui.label(RichText::new(name).strong().size(12.0));
+                                            ui.label(
+                                                RichText::new(*kind)
+                                                    .size(10.0)
+                                                    .color(Color32::from_gray(160)),
+                                            );
+                                        });
+                                    });
+                                    if !desc.is_empty() {
+                                        let mut chars = desc.chars();
+                                        let preview: String = (&mut chars).take(24).collect();
+                                        let suffix = if chars.next().is_some() { "…" } else { "" };
+                                        ui.label(
+                                            RichText::new(format!("{preview}{suffix}"))
+                                                .size(10.0)
+                                                .color(Color32::from_gray(140)),
+                                        );
+                                    }
+                                    if *link_count > 0 {
+                                        ui.label(
+                                            RichText::new(format!("🔗{link_count}"))
+                                                .size(10.0)
+                                                .color(Color32::from_rgb(100, 170, 230)),
+                                        );
+                                    }
+                                })
+                                .response
+                                .interact(egui::Sense::click());
+
+                            if card.clicked() {
+                                switch_to_obj_idx = Some(*i);
+                            }
+                            card.on_hover_text(if desc.is_empty() {
+                                format!("{name} ({kind}) — 点击在对象面板中查看")
+                            } else {
+                                format!("{name}: {desc}")
+                            });
+                            ui.add_space(3.0);
+                        }
+                    });
+                }
+            });
+
+        // ── Central panel: single full-width Markdown editor ──────────────────
         egui::CentralPanel::default().show(ctx, |ui| {
-            // Toolbar row above editors
+            // Toolbar row above editor
             ui.horizontal(|ui| {
                 ui.label(RichText::new("编辑区").strong());
                 ui.separator();
                 if ui.button("提取结构")
-                    .on_hover_text("从左侧 Markdown 标题 (#/##/###) 提取章节结构到「章节结构」面板")
+                    .on_hover_text("从 Markdown 标题 (#/##/###) 提取章节结构到「章节结构」面板")
                     .clicked()
                 {
                     do_extract_struct = true;
@@ -243,7 +413,7 @@ impl TextToolApp {
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
-                        RichText::new("Tab=缩进  Ctrl+B=粗体  Ctrl+I=斜体  Ctrl+Z=撤销  Ctrl+S=保存")
+                        RichText::new("Ctrl+B 粗体  Ctrl+I 斜体  Ctrl+Z 撤销  Ctrl+S 保存  Ctrl+滚轮 缩放")
                             .small()
                             .color(Color32::from_gray(120)),
                     );
@@ -253,148 +423,97 @@ impl TextToolApp {
 
             let available = ui.available_size();
 
-            ui.columns(2, |cols| {
-                // Left pane - Markdown
-                let left_title = self.left_file.as_ref()
-                    .map(|f| f.title())
-                    .unwrap_or_else(|| "左侧 (Markdown)".to_owned());
+            // File header bar
+            let file_title = self.left_file.as_ref()
+                .map(|f| f.title())
+                .unwrap_or_else(|| "文本编辑区".to_owned());
 
-                cols[0].group(|ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(&left_title).strong());
-                        // Word count for markdown files
-                        if let Some(f) = &self.left_file {
-                            if f.is_markdown() {
-                                let char_count: usize = f.content.chars()
-                                    .filter(|c| !c.is_whitespace()).count();
-                                ui.label(
-                                    RichText::new(format!("文字数: {}", char_count))
-                                        .small().color(Color32::from_gray(150))
-                                );
-                            }
-                        }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.small_button("💾").on_hover_text("保存 (Ctrl+S)").clicked() {
-                                self.save_left();
-                            }
-                            // Preview toggle – only meaningful for Markdown files
-                            let is_md = self.left_file.as_ref().map(|f| f.is_markdown()).unwrap_or(false);
-                            if is_md {
-                                let toggle_label = if self.left_preview_mode { "✏ 编辑" } else { "👁 预览" };
-                                let hover = if self.left_preview_mode { "切换到编辑模式" } else { "切换到预览模式" };
-                                if ui.small_button(toggle_label).on_hover_text(hover).clicked() {
-                                    self.left_preview_mode = !self.left_preview_mode;
-                                }
-                            }
-                        });
-                    });
-                    ui.separator();
-
-                    let height = available.y - 60.0;
-                    let is_preview = self.left_preview_mode
-                        && self.left_file.as_ref().map(|f| f.is_markdown()).unwrap_or(false);
-
-                    if is_preview {
-                        // ── Markdown preview ──────────────────────────────────
-                        if let Some(f) = &self.left_file {
-                            // Use references to avoid cloning – both are immutable
-                            // borrows of different fields, which Rust allows.
-                            let content: &str = &f.content;
-                            let settings = &self.md_settings;
-                            egui::ScrollArea::vertical()
-                                .id_salt("left_preview")
-                                .show(ui, |ui| {
-                                    ui.set_min_height(height);
-                                    render_markdown(ui, content, settings);
-                                });
-                        }
-                    } else if let Some(f) = &mut self.left_file {
-                        // ── Plain text editor ─────────────────────────────────
-                        let prev = f.content.clone();
-                        egui::ScrollArea::both()
-                            .id_salt("left_editor")
-                            .show(ui, |ui| {
-                                let editor = egui::TextEdit::multiline(&mut f.content)
-                                    .id(egui::Id::new("left_editor_main"))
-                                    .desired_width(f32::INFINITY)
-                                    .desired_rows(30)
-                                    .min_size(egui::vec2(0.0, height))
-                                    .font(egui::TextStyle::Monospace)
-                                    .code_editor();
-                                let resp = ui.add(editor);
-                                if resp.has_focus() {
-                                    self.last_focused_left = true;
-                                }
-                                if resp.changed() {
-                                    if prev != f.content {
-                                        self.left_undo_stack.push_back(prev);
-                                        if self.left_undo_stack.len() > 200 {
-                                            self.left_undo_stack.pop_front();
-                                        }
-                                    }
-                                    f.modified = true;
-                                }
-                            });
-                    } else {
-                        ui.centered_and_justified(|ui| {
-                            ui.label(RichText::new("双击文件树中的 .md 文件打开\n或从右键菜单选择\"在左侧打开\"")
-                                .color(Color32::GRAY));
-                        });
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(&file_title).strong());
+                // Word count
+                if let Some(f) = &self.left_file {
+                    if f.is_markdown() {
+                        let char_count: usize = f.content.chars()
+                            .filter(|c| !c.is_whitespace()).count();
+                        ui.label(
+                            RichText::new(format!("字数: {char_count}"))
+                                .small().color(Color32::from_gray(150)),
+                        );
                     }
-                });
-
-                // Right pane - JSON
-                let right_title = self.right_file.as_ref()
-                    .map(|f| f.title())
-                    .unwrap_or_else(|| "右侧 (JSON)".to_owned());
-
-                cols[1].group(|ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(&right_title).strong());
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.small_button("💾").on_hover_text("保存 (Ctrl+Shift+S)").clicked() {
-                                self.save_right();
-                            }
-                        });
-                    });
-                    ui.separator();
-
-                    let height = available.y - 60.0;
-                    if let Some(f) = &mut self.right_file {
-                        let prev = f.content.clone();
-                        egui::ScrollArea::both()
-                            .id_salt("right_editor")
-                            .show(ui, |ui| {
-                                let editor = egui::TextEdit::multiline(&mut f.content)
-                                    .desired_width(f32::INFINITY)
-                                    .desired_rows(30)
-                                    .min_size(egui::vec2(0.0, height))
-                                    .font(egui::TextStyle::Monospace)
-                                    .code_editor();
-                                let resp = ui.add(editor);
-                                if resp.has_focus() {
-                                    self.last_focused_left = false;
-                                }
-                                if resp.changed() {
-                                    if prev != f.content {
-                                        self.right_undo_stack.push_back(prev);
-                                        if self.right_undo_stack.len() > 200 {
-                                            self.right_undo_stack.pop_front();
-                                        }
-                                    }
-                                    f.modified = true;
-                                }
-                            });
-                    } else {
-                        ui.centered_and_justified(|ui| {
-                            ui.label(RichText::new("双击文件树中的文件打开\n或从右键菜单选择\"在右侧打开\"")
-                                .color(Color32::GRAY));
-                        });
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("💾").on_hover_text("保存 (Ctrl+S)").clicked() {
+                        self.save_left();
+                    }
+                    let is_md = self.left_file.as_ref().map(|f| f.is_markdown()).unwrap_or(false);
+                    if is_md {
+                        let toggle_label = if self.left_preview_mode { "✏ 编辑" } else { "👁 预览" };
+                        let hover = if self.left_preview_mode { "切换到编辑模式" } else { "切换到预览模式 (Ctrl+P)" };
+                        if ui.small_button(toggle_label).on_hover_text(hover).clicked() {
+                            self.left_preview_mode = !self.left_preview_mode;
+                        }
                     }
                 });
             });
+            ui.separator();
+
+            let height = available.y - 80.0;
+            let is_preview = self.left_preview_mode
+                && self.left_file.as_ref().map(|f| f.is_markdown()).unwrap_or(false);
+
+            if is_preview {
+                if let Some(f) = &self.left_file {
+                    let content: &str = &f.content;
+                    let settings = &self.md_settings;
+                    egui::ScrollArea::vertical()
+                        .id_salt("left_preview")
+                        .show(ui, |ui| {
+                            ui.set_min_height(height);
+                            render_markdown(ui, content, settings);
+                        });
+                }
+            } else if let Some(f) = &mut self.left_file {
+                let prev = f.content.clone();
+                egui::ScrollArea::both()
+                    .id_salt("left_editor")
+                    .show(ui, |ui| {
+                        let font_id = egui::FontId::monospace(self.md_settings.editor_font_size);
+                        let editor = egui::TextEdit::multiline(&mut f.content)
+                            .id(egui::Id::new("left_editor_main"))
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(30)
+                            .min_size(egui::vec2(0.0, height))
+                            .font(font_id)
+                            .code_editor();
+                        let resp = ui.add(editor);
+                        if resp.has_focus() {
+                            self.last_focused_left = true;
+                        }
+                        if resp.changed() {
+                            if prev != f.content {
+                                self.left_undo_stack.push_back(prev);
+                                if self.left_undo_stack.len() > 200 {
+                                    self.left_undo_stack.pop_front();
+                                }
+                            }
+                            f.modified = true;
+                        }
+                    });
+            } else {
+                ui.centered_and_justified(|ui| {
+                    ui.label(
+                        RichText::new("从左侧文件树双击打开文件，\n或通过菜单「文件 → 打开项目文件夹」")
+                            .color(Color32::GRAY),
+                    );
+                });
+            }
         });
 
+        // Apply deferred actions
+        if let Some(idx) = switch_to_obj_idx {
+            self.selected_obj_idx = Some(idx);
+            self.active_panel = Panel::Objects;
+        }
         if do_extract_struct { self.extract_structure_from_left(); }
         if do_sync_folders   { self.sync_struct_from_folders(); }
     }

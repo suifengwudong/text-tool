@@ -399,6 +399,29 @@ pub struct LlmConfig {
     pub system_prompt: String,
 }
 
+// ── App theme ─────────────────────────────────────────────────────────────────
+
+/// UI colour theme preference.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+pub enum AppTheme {
+    /// Follow the operating-system dark/light preference (egui default).
+    #[default]
+    Dark,
+    Light,
+}
+
+impl AppTheme {
+    pub fn label(self) -> &'static str {
+        match self {
+            AppTheme::Dark  => "暗色",
+            AppTheme::Light => "亮色",
+        }
+    }
+    pub fn all() -> &'static [AppTheme] {
+        &[AppTheme::Dark, AppTheme::Light]
+    }
+}
+
 // ── Markdown rendering settings ───────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -418,10 +441,18 @@ pub struct MarkdownSettings {
     /// a file is saved (Ctrl+S).
     #[serde(default)]
     pub auto_extract_structure: bool,
+    /// Font size for the plain-text Markdown editor (independent of preview).
+    #[serde(default = "default_editor_font_size")]
+    pub editor_font_size: f32,
+    /// Auto-save interval in seconds. 0 = disabled.
+    #[serde(default = "default_auto_save_interval")]
+    pub auto_save_interval_secs: u32,
 }
 
 fn default_true() -> bool { true }
 fn default_tab_size() -> u8 { 2 }
+fn default_editor_font_size() -> f32 { 13.0 }
+fn default_auto_save_interval() -> u32 { 60 }
 
 impl Default for MarkdownSettings {
     fn default() -> Self {
@@ -431,6 +462,8 @@ impl Default for MarkdownSettings {
             hide_json: true,
             tab_size: 2,
             auto_extract_structure: false,
+            editor_font_size: 13.0,
+            auto_save_interval_secs: 60,
         }
     }
 }
@@ -444,6 +477,9 @@ pub struct AppConfig {
     pub last_project: Option<String>,
     /// Whether to automatically load JSON/MD data files when opening a project.
     pub auto_load: bool,
+    /// UI colour theme.
+    #[serde(default)]
+    pub theme: AppTheme,
 }
 
 // ── Full-text search result ────────────────────────────────────────────────────
