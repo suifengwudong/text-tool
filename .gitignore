@@ -10,9 +10,13 @@ Cargo.lock
 *.log
 rustup-init.exe
 
-# Release executables (keep documentation)
+# Release builds (keep documentation and scripts)
 release/*/text_tool.exe
+release/*/*.exe
 release/*/*.zip
+release/*/*.7z
+release/*/*.tar.gz
+# Keep documentation files like README.md in release directories
 
 # Assets (if not committed)
 # assets/

@@ -105,7 +105,7 @@ function Main {
     }
     Write-ColorOutput "✅ 构建完成" "Green"
 
-    # 创建release目录
+    # 创建release目录和文件
     if (-not $DryRun) {
         if (-not (Test-Path $ReleaseDir)) {
             New-Item -ItemType Directory -Path $ReleaseDir -Force | Out-Null
@@ -121,16 +121,15 @@ function Main {
 
         # 复制README
         Copy-Item "README.md" "$ReleaseDir\" -Force
-    }
 
-    # 创建压缩包
-    $zipName = "$ProjectName-$TagName-windows-x64.zip"
-    $zipPath = "$ReleaseDir\$zipName"
-
-    if (-not $DryRun) {
+        # 创建压缩包
+        $zipName = "$ProjectName-$TagName-windows-x64.zip"
+        $zipPath = "$ReleaseDir\$zipName"
         Write-ColorOutput "📦 创建发布包..." "Yellow"
         Compress-Archive -Path "$ReleaseDir\*" -DestinationPath $zipPath -Force
         Write-ColorOutput "✅ 发布包创建完成: $zipPath" "Green"
+    } else {
+        Write-ColorOutput "📦 预览：将创建发布包 $ProjectName-$TagName-windows-x64.zip" "Cyan"
     }
 
     # 创建git tag
