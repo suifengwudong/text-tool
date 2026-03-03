@@ -1,4 +1,26 @@
-# 发布指南
+# 发布指南 (Rust标准方式)
+
+## Rust项目的正确发布方式
+
+与Node.js使用npm发布到npm registry类似，Rust项目有以下发布方式：
+
+### 1. 库项目 → crates.io
+```bash
+cargo login
+cargo publish
+```
+
+### 2. 二进制应用 → GitHub Releases
+```bash
+# 使用GitHub CLI (推荐)
+gh release create v1.0.0 --generate-notes
+
+# 或使用我们的自动化脚本
+.\release.ps1 -Version "1.0.0"
+```
+
+### 3. 自动化 → GitHub Actions
+在 `.github/workflows/release.yml` 中配置自动发布
 
 ## 目录结构
 
@@ -13,66 +35,49 @@ release/
 └── ...
 ```
 
-## 自动化发布流程
+## 发布流程 (推荐方式)
 
-### 准备工作
+### 使用GitHub CLI (最简单)
 
-1. **获取GitHub Token**
-   - 访问 https://github.com/settings/tokens
-   - 生成新的Personal Access Token
-   - 权限：至少需要 `repo` 权限
+1. **安装GitHub CLI**
+   ```bash
+   # Windows (winget)
+   winget install --id GitHub.cli
 
-2. **安装依赖**
-   - Rust (cargo)
-   - Git
-   - PowerShell 5.1+
+   # 或下载安装包
+   # https://github.com/cli/cli/releases
+   ```
 
-### 发布步骤
+2. **认证**
+   ```bash
+   gh auth login
+   ```
 
-#### 方法1：使用自动化脚本（推荐）
+3. **创建release**
+   ```bash
+   # 自动生成发布说明
+   gh release create v0.1.1 --generate-notes
+
+   # 或指定文件
+   gh release create v0.1.1 ./release/v0.1.1/text-tool-v0.1.1-windows-x64.zip
+   ```
+
+### 使用自动化脚本
 
 ```powershell
-# 基本发布
-.\publish-release.ps1 -Version "0.1.1" -ApiToken "ghp_your_token_here"
+# 预览发布内容
+.\release.ps1 -Version "0.1.1" -DryRun
 
-# 跳过构建（如果已构建）
-.\publish-release.ps1 -Version "0.1.1" -ApiToken "ghp_xxx" -SkipBuild
-
-# 跳过tag创建
-.\publish-release.ps1 -Version "0.1.1" -ApiToken "ghp_xxx" -SkipTag
+# 实际发布
+.\release.ps1 -Version "0.1.1"
 ```
 
-#### 方法2：手动发布
-
-1. **构建release版本**
-   ```bash
-   cargo build --release
-   ```
-
-2. **创建版本目录**
-   ```bash
-   mkdir release\v0.1.1
-   cp target\release\text_tool.exe release\v0.1.1\
-   cp README.md release\v0.1.1\
-   ```
-
-3. **创建git tag**
-   ```bash
-   git tag -a v0.1.1 -m "Release v0.1.1"
-   git push origin v0.1.1
-   ```
-
-4. **创建压缩包**
-   ```powershell
-   Compress-Archive -Path "release\v0.1.1\*" -DestinationPath "release\v0.1.1\text-tool-v0.1.1-windows-x64.zip"
-   ```
-
-5. **在GitHub上创建Release**
-   - 访问 https://github.com/suifengwudong/text-tool/releases/new
-   - Tag version: v0.1.1
-   - Release title: 轻墨小说写作工具 v0.1.1
-   - 复制 release\v0.1.1\README.md 的内容作为描述
-   - 上传压缩包
+脚本会自动：
+- ✅ 构建release版本 (`cargo build --release`)
+- ✅ 创建release目录结构
+- ✅ 生成压缩包
+- ✅ 创建git tag并推送
+- ✅ 使用GitHub CLI创建release并上传文件
 
 ## 版本号规范
 
@@ -88,9 +93,62 @@ release/
 - [ ] 更新了README中的版本信息
 - [ ] 更新了CHANGELOG（如果有）
 - [ ] 提交了所有更改到main分支
-- [ ] 准备好了GitHub API Token
+- [ ] 准备好了GitHub CLI认证 (`gh auth status`)
+
+## GitHub Actions自动化发布
+
+创建 `.github/workflows/release.yml`：
+
+```yaml
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Build release
+      run: cargo build --release
+
+    - name: Create release archive
+      run: |
+        mkdir release
+        cp target/release/text_tool.exe release/
+        cp README.md release/
+        Compress-Archive -Path "release/*" -DestinationPath "text-tool-${{ github.ref_name }}-windows-x64.zip"
+
+    - name: Create GitHub release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: text-tool-${{ github.ref_name }}-windows-x64.zip
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+推送tag时会自动创建release！
 
 ## 故障排除
+
+### GitHub CLI认证问题
+```bash
+# 检查认证状态
+gh auth status
+
+# 重新认证
+gh auth login
+```
 
 ### 构建失败
 ```bash
@@ -99,44 +157,15 @@ cargo clean
 cargo build --release
 ```
 
-### GitHub API错误
-- 检查API Token是否正确
-- 确认Token有足够权限
-- 检查网络连接
+### 权限问题
+确保GitHub CLI有发布权限，或使用Personal Access Token。
 
-### 脚本权限错误
-```powershell
-# 设置执行策略
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-```
+## 最佳实践
 
-## 自动化集成
+1. **始终测试release构建**：`cargo build --release`
+2. **使用有意义的tag消息**
+3. **保持发布说明更新**
+4. **定期清理旧的release文件**
+5. **使用GitHub Actions自动化重复工作**
 
-### GitHub Actions (可选)
-
-可以设置GitHub Actions自动发布：
-
-```yaml
-# .github/workflows/release.yml
-name: Release
-on:
-  push:
-    tags:
-      - 'v*'
-jobs:
-  release:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-      - run: cargo build --release
-      - uses: softprops/action-gh-release@v1
-        with:
-          files: target/release/text_tool.exe
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-```
-
-这样推送tag时会自动创建release。
+这样就符合Rust生态的标准发布方式了！🚀
