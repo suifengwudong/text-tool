@@ -184,16 +184,24 @@ Release $TagName
         $ghArgs += $zipPath
     }
 
-    if ($DryRun) {
-        Write-ColorOutput "🔍 预览命令 (不会实际执行):" "Cyan"
-        Write-ColorOutput "gh $($ghArgs -join ' ')" "Gray"
-    } else {
+    try {
         # 执行GitHub CLI命令
         & gh @ghArgs
         if ($LASTEXITCODE -ne 0) {
             throw "GitHub release创建失败"
         }
         Write-ColorOutput "✅ GitHub release创建成功" "Green"
+    } catch {
+        Write-ColorOutput "⚠️ GitHub CLI认证失败，但发布文件已准备就绪" "Yellow"
+        Write-ColorOutput "📋 请手动在GitHub上创建release:" "Cyan"
+        Write-ColorOutput "   1. 访问: https://github.com/$Owner/$Repo/releases/new" "White"
+        Write-ColorOutput "   2. Tag: $TagName" "White"
+        Write-ColorOutput "   3. Title: $ProjectName $TagName" "White"
+        Write-ColorOutput "   4. 上传文件: $zipPath" "White"
+        Write-ColorOutput "   5. 发布说明请复制README.md内容" "White"
+        Write-ColorOutput "" "White"
+        Write-ColorOutput "🔍 预览命令 (用于手动执行):" "Cyan"
+        Write-ColorOutput "gh $($ghArgs -join ' ')" "Gray"
     }
 
     # 显示发布信息
