@@ -213,7 +213,7 @@ impl TextToolApp {
             left_undo_stack: VecDeque::new(),
             right_undo_stack: VecDeque::new(),
             last_focused_left: true,
-            status: "欢迎使用 Text Tool".to_owned(),
+            status: "欢迎使用清墨".to_owned(),
             new_file_dialog: None,
             rename_dialog: None,
             selected_file_path: None,
